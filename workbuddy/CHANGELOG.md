@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.6
+
+### Model catalog refresh + models-API field rename
+
+- `models.go` — `wbModels()` static fallback list re-synced against the live
+  upstream `cli` agent catalog (snapshot 2026-08-23, CN realm). Added:
+  `auto` (smart routing, 168K/32K), `hy3-x` (192K/64K), `glm-5.3` (1M/48K),
+  `kimi-k3-1` (Kimi-K3, 1M/32K), `kimi-k2.6` (256K/32K). Removed retired
+  `hy3-preview` / `hy3-preview-agent`. `kimi-k2.7` display name updated to
+  Kimi-K2.7-Code; all ContextLength/MaxCompletionTokens now mirror upstream
+  `maxInputTokens`/`maxOutputTokens` instead of the old 131072/8192 defaults.
+- `models.go` — P1: `callModelsAPI` now decodes `maxInputTokens` /
+  `maxOutputTokens` (the upstream renamed these fields from
+  `contextWindow` / `maxTokens`); legacy spellings still accepted as
+  fallback so an older Global-realm response keeps working. Before this fix
+  every dynamically discovered model reported ContextLength=0 and
+  MaxCompletionTokens=0. Also deduplicated the twice-written anonymous
+  model struct into a named `upstreamModel` type.
+
 ## 0.8.2
 
 ### Concurrency + lifecycle hardening

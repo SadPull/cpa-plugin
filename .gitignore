@@ -7,3 +7,7 @@ dist/
 *.test
 *.out
 workbuddy/workbuddy-plus
+
+# local toolchain scratch (portable Go/gcc used for verification only)
+.gotoolchain/
+.zcode/
