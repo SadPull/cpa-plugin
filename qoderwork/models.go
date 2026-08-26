@@ -76,6 +76,13 @@ func fetchDynamicModels() []pluginapi.ModelInfo {
 		if err != nil || sa == nil {
 			continue
 		}
+		// Defense in depth: never send a foreign-domain credential (e.g. a
+		// workbuddy file the host mislabeled qoderwork) to the QoderWork models
+		// API. Both plugins share the nested {auth,account} shape, so
+		// parseStored alone cannot tell them apart — domain can.
+		if d := strings.ToLower(strings.TrimSpace(sa.Auth.Domain)); d != "" && !isQoderDomain(d) {
+			continue
+		}
 		dyn, err := callModelsAPI(sa)
 		if err == nil && len(dyn) > 0 {
 			storeDynamicModels(dyn)

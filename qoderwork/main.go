@@ -593,6 +593,15 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 		if !routed && !prefixed {
 			return okEnvelope(pluginapi.AuthParseResponse{Handled: false})
 		}
+		// Even when routed/prefixed, a type-less file must not be provably
+		// foreign: both plugins share the nested {auth,account} shape, so a
+		// workbuddy OAuth credential parses cleanly as qoderwork. If the file
+		// carries a domain, only claim qoder domains — a codebuddy.cn /
+		// workbuddy.ai domain means this is workbuddy's file (the bug where a
+		// workbuddy OAuth auth got reclassified as qoderwork after a refresh).
+		if d := domainFromJSON(req.RawJSON); d != "" && !isQoderDomain(d) {
+			return okEnvelope(pluginapi.AuthParseResponse{Handled: false})
+		}
 	}
 	sa, err := parseStored(req.RawJSON)
 	if err != nil {
