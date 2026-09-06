@@ -95,6 +95,13 @@ plugins:
       # 积分生命周期：CN 耗尽禁用 / Global 耗尽删除 / CN 回血恢复（默认 true）。
       lifecycle_auto: true
 
+      # 模型目录自动更新（默认 true）。每 models_refresh_minutes 分钟拉取一次
+      # 上游模型列表；检测到模型增减时给启用账号文件加 models_synced_at 时间
+      # 戳写回，借 CPA 文件监控立即重注册模型，无需重启。
+      models_refresh: true
+      models_refresh_minutes: 10
+      models_refresh_push: true
+
       # 调度行为（默认 "off"）：
       #   off     → 完全交给 CPA 内置调度
       #   credits → 插件选中面板选中的账号（耗尽/禁用时回退）

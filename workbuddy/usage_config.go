@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,6 +63,9 @@ func configure(raw []byte) {
 	nextSchedulerMode := schedulerModeOff // reset to default on reconfigure
 	nextKeepaliveAuto := true
 	nextMgmtKey := ""
+	nextModelsRefresh := true
+	nextModelsRefreshMins := 10
+	nextModelsRefreshPush := true
 
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
@@ -104,6 +108,20 @@ func configure(raw []byte) {
 					v = strings.Trim(v, "\"'")
 					nextKeepaliveAuto = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
+				if strings.HasPrefix(line, "models_refresh:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "models_refresh:"))
+					nextModelsRefresh = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "models_refresh_minutes:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "models_refresh_minutes:"))
+					if n, err := strconv.Atoi(strings.Trim(v, "\"'")); err == nil {
+						nextModelsRefreshMins = n
+					}
+				}
+				if strings.HasPrefix(line, "models_refresh_push:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "models_refresh_push:"))
+					nextModelsRefreshPush = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
 			}
 		}
 	}
@@ -135,6 +153,12 @@ func configure(raw []byte) {
 	managementAPIKeyMu.Unlock()
 
 	resolveUsageReport(cfgURL, cfgKey)
+
+	// Model catalog refresher: apply config, then make sure the background
+	// goroutine exists (startModelsRefresher is idempotent via sync.Once).
+	setModelsRefreshConfig(nextModelsRefresh, nextModelsRefreshMins, nextModelsRefreshPush)
+	startModelsRefresher()
+
 	ensureScheduler()
 }
 

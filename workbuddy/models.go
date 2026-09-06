@@ -67,11 +67,17 @@ func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 		}
 	}
 	if accessToken == "" {
+		if models, ok := lastGoodOrStatic(); ok {
+			return models
+		}
 		return wbModels()
 	}
 	if dyn, err := callModelsAPI(accessToken); err == nil && len(dyn) > 0 {
 		storeDynamicModels(dyn)
 		return dyn
+	}
+	if models, ok := lastGoodOrStatic(); ok {
+		return models
 	}
 	return wbModels()
 }

@@ -109,6 +109,14 @@ plugins:
       # re-enable CN after check-in restores credits (default true).
       lifecycle_auto: true
 
+      # Model catalog auto-refresh (default true). Polls the upstream model
+      # list every models_refresh_minutes; when the catalog changes, each
+      # enabled account file is stamped (models_synced_at) to fire CPA's
+      # watcher and re-register models without a restart.
+      models_refresh: true
+      models_refresh_minutes: 10
+      models_refresh_push: true
+
       # Scheduler behavior (default "off"):
       #   off     → defer to CPA's built-in scheduler entirely
       #   credits → plugin picks the panel-selected account (with fallback
