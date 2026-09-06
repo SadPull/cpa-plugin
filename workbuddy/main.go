@@ -656,6 +656,15 @@ func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi
 	}
 	label := labelForAuth(sa)
 	meta := enrichAuthMetadata(sa, cr, disabled)
+	// Surface the models_refresh push stamp as a routing attribute: the host
+	// only dispatches a Modify (and re-registers models) when the PARSED auth
+	// differs (authEqual on coreauth.Auth). The stamp must therefore appear
+	// here — StorageJSON alone is not guaranteed to be diffed field-by-field
+	// by every host path.
+	var attributes map[string]string
+	if sa != nil && strings.TrimSpace(sa.Auth.ModelsSyncedAt) != "" {
+		attributes = map[string]string{"models_synced_at": sa.Auth.ModelsSyncedAt}
+	}
 	return pluginapi.AuthData{
 		Provider:    providerName,
 		ID:          id,
@@ -665,7 +674,8 @@ func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi
 		StorageJSON: storage,
 		// Standardized auth metadata. `type` is required by the host for
 		// auth-file classification; `logo`/`note`/`disabled` surface on auth rows.
-		Metadata: meta,
+		Metadata:   meta,
+		Attributes: attributes,
 	}
 }
 
