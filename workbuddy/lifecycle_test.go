@@ -121,12 +121,13 @@ func TestDisplayNote(t *testing.T) {
 	}
 }
 
-func TestBuildAuthFileJSON_ContainsDisabledAndNote(t *testing.T) {
+func TestBuildAuthFileJSONPreserve_NewFileContainsDisabledAndNote(t *testing.T) {
 	sa := &storedAuth{
 		Auth:    storedTokens{AccessToken: "at", RefreshToken: "rt", Domain: "www.codebuddy.cn"},
 		Account: storedAccount{UID: "u1", Nickname: "nick"},
 	}
-	raw, err := buildAuthFileJSON(sa, true, "CN · test", nil)
+	// current=nil ⇒ brand-new file: behaves exactly like the old fixed-shape builder.
+	raw, err := buildAuthFileJSONPreserve(nil, sa, true, "CN · test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

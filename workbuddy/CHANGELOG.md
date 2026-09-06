@@ -49,6 +49,17 @@ Fixes:
   auth.ID → physical file via host.auth.list + host.auth.get.
 - `credits_handler.go` — re-import of an existing credential now preserves
   the current file's user fields instead of flattening to the fixed shape.
+- `keepalive.go persistAuthTokens` — **P0, worse than the 7-key builder**: it
+  wrote a bare `json.Marshal(sa)`, i.e. only the nested `{auth,account}`
+  block, dropping EVERY top-level key. Observed live 2026-09-06 22:00:00: the
+  auth file was left with exactly `['account','auth','disabled']` — no
+  `type`/`provider`/`logo`/`note` and no user fields. qoderwork fixed the same
+  P0 in v0.2.4; workbuddy never got the fix. Now uses
+  `buildAuthFileJSONPreserve(phys.JSON, ...)` with the on-disk note carried over.
+- `authfile.go` — removed the now-dead fixed-shape `buildAuthFileJSON`. Keeping
+  the function that caused this bug around would invite the same regression on
+  the next call site; `buildAuthFileJSONPreserve(nil, ...)` is exactly
+  equivalent for brand-new files.
 - `field_preservation_test.go` — regression tests for all of the above
   (ParseAuth preservation, ParseAuth disabled, preserve builder, metadata
   merge, refresh base).

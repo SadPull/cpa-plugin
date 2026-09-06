@@ -149,6 +149,15 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 // persistAuthTokens writes the updated credential back through the host API.
 // The host's file watcher reloads it; we deliberately do NOT dual-write the
 // physical path (same rule as hostAuthPersist).
+//
+// MUST go through buildAuthFileJSONPreserve with the CURRENT physical file as
+// base — a bare json.Marshal(sa) writes only the nested {auth,account} block
+// and drops EVERY top-level key (type/provider/logo/note/disabled and all
+// user-managed fields like excluded-models), resurrecting accounts the
+// lifecycle disabled and silently undoing model-disable settings. The preserve
+// variant refreshes the tokens + the note carried over from disk while keeping
+// every unknown key. (qoderwork fixed the same P0 in v0.2.4; this brings
+// workbuddy in line.)
 func persistAuthTokens(authIndex string, sa *storedAuth) error {
 	phys, err := hostAuthGetPhysical(authIndex)
 	if err != nil {
@@ -158,7 +167,16 @@ func persistAuthTokens(authIndex string, sa *storedAuth) error {
 	if name == "" {
 		name = authFileNameFor(sa)
 	}
-	raw, err := json.Marshal(sa)
+	// Carry over the note currently on disk (lifecycle writes credit/status
+	// notes there; dropping it would regress the panel display).
+	note := ""
+	var doc map[string]any
+	if err := json.Unmarshal(phys.JSON, &doc); err == nil {
+		if s, ok := doc["note"].(string); ok {
+			note = s
+		}
+	}
+	raw, err := buildAuthFileJSONPreserve(phys.JSON, sa, phys.Disabled, note, nil)
 	if err != nil {
 		return err
 	}

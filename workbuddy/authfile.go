@@ -171,45 +171,7 @@ func hostAuthSaveJSON(name string, raw []byte) error {
 
 // lifecycleStateUnchanged avoids redundant saves when note/disabled unchanged.
 
-// buildAuthFileJSON produces host-save payload: nested storage + top-level metadata.
-// extra merges additional top-level keys (optional).
-//
-// The output is built from a FIXED 7-key shape, so any top-level field the
-// user (or the management panel) added to the auth file — excluded-models,
-// prefix, proxy_url, priority, headers, note overrides, etc. — is silently
-// dropped whenever the plugin rewrites the file. Callers that rewrite an
-// EXISTING file must use buildAuthFileJSONPreserve instead (round-trips the
-// current physical JSON). This fixed-shape builder is only appropriate for
-// creating a brand-new credential file (e.g. import / fresh login).
-
-func buildAuthFileJSON(sa *storedAuth, disabled bool, note string, extra map[string]any) ([]byte, error) {
-	if sa == nil {
-		return nil, fmt.Errorf("nil storedAuth")
-	}
-	storage, err := json.Marshal(sa)
-	if err != nil {
-		return nil, err
-	}
-	var nested map[string]any
-	if err := json.Unmarshal(storage, &nested); err != nil {
-		return nil, err
-	}
-	out := map[string]any{
-		"type":     providerName,
-		"provider": providerName,
-		"logo":     pluginLogoURL,
-		"disabled": disabled,
-		"note":     note,
-		"auth":     nested["auth"],
-		"account":  nested["account"],
-	}
-	for k, v := range extra {
-		out[k] = v
-	}
-	return json.Marshal(out)
-}
-
-// buildAuthFileJSONPreserve rewrites an EXISTING auth file without dropping
+// buildAuthFileJSONPreserve rewrites an auth file without dropping
 // user-managed top-level fields. It starts from the current physical JSON
 // (current), overwrites only the 7 keys the plugin owns
 // (type/provider/logo/disabled/note/auth/account), then applies extra.
