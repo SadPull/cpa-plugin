@@ -35,8 +35,9 @@ Fixes:
   `disabled` read from the file. ParseAuth output now round-trips user fields.
 - `authfile.go` — new `buildAuthFileJSONPreserve(current, ...)`: starts from
   the current physical file (round-trip), overwrites only the 7 plugin-owned
-  keys, keeps everything else. `buildAuthFileJSON` retained for brand-new
-  files (first login). New `userFieldsFromAuthJSON(raw)` helper.
+  keys, keeps everything else; with `current` empty it degrades to the old
+  fixed shape, so it also serves brand-new files. New
+  `userFieldsFromAuthJSON(raw)` helper.
 - `lifecycle.go` — `disableAuth` / `reenableAuth` / `deleteAuth` (no-path
   fallback) / `syncAuthNote` now pass `phys.JSON` as the preserve base.
 - `oauth.go` — refresh path: new `refreshMetadataBase(req)` resolves the
@@ -50,11 +51,15 @@ Fixes:
 - `credits_handler.go` — re-import of an existing credential now preserves
   the current file's user fields instead of flattening to the fixed shape.
 - `keepalive.go persistAuthTokens` — **P0, worse than the 7-key builder**: it
-  wrote a bare `json.Marshal(sa)`, i.e. only the nested `{auth,account}`
-  block, dropping EVERY top-level key. Observed live 2026-09-06 22:00:00: the
-  auth file was left with exactly `['account','auth','disabled']` — no
-  `type`/`provider`/`logo`/`note` and no user fields. qoderwork fixed the same
-  P0 in v0.2.4; workbuddy never got the fix. Now uses
+  wrote a bare `json.Marshal(sa)`. Since `storedAuth` only carries the two
+  nested blocks, the saved file contains exactly `{auth, account}` — no
+  `type`/`provider`/`logo`/`note`/`disabled` and no user-managed field. The
+  host's `saveAuthFile` writes the payload verbatim (`os.WriteFile`), so
+  nothing adds the missing keys back: the credential loses its provider
+  classification and, worse, an account the lifecycle disabled comes back
+  enabled on the next keepalive tick. qoderwork fixed the identical P0 in
+  v0.2.4 ("a 22:00 keepalive refresh used to wipe disabled:true and put the
+  account back into rotation"); workbuddy never got the fix. Now uses
   `buildAuthFileJSONPreserve(phys.JSON, ...)` with the on-disk note carried over.
 - `authfile.go` — removed the now-dead fixed-shape `buildAuthFileJSON`. Keeping
   the function that caused this bug around would invite the same regression on
