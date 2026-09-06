@@ -20,8 +20,25 @@ func sampleStoredAuth() *storedAuth {
 	}
 }
 
-func existingFileWithUserFields() []byte {
-	return []byte(`{
+// decodeParseAuth unwraps the plugin RPC envelope into an AuthParseResponse
+// (qoderwork has no auth_identity_test.go, so the helper lives here).
+func decodeParseAuth(t *testing.T, raw []byte) pluginapi.AuthParseResponse {
+	t.Helper()
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("envelope: %v", err)
+	}
+	if !env.OK {
+		t.Fatalf("not ok: %+v", env.Error)
+	}
+	var resp pluginapi.AuthParseResponse
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	return resp
+}
+
+func existingFileWithUserFields() []byte {	return []byte(`{
 		"type": "qoderwork",
 		"provider": "qoderwork",
 		"logo": "old-logo",
@@ -180,5 +197,110 @@ func TestToAuthDataForRefresh_PreservesMetadata(t *testing.T) {
 	}
 	if ad.FileName != "" || ad.ID != "" {
 		t.Fatalf("FileName/ID must stay empty for host backfill: %q %q", ad.FileName, ad.ID)
+	}
+}
+
+// TestHandleParseAuth_PreservesUserFields is the regression guard for the
+// PRIMARY model-disable bug (mirrors workbuddy): the host persists an auth as
+// mergedStorageJSON(StorageJSON, Metadata), so whatever metadata ParseAuth
+// returns becomes the file's top-level keys on the next watcher re-parse.
+// Returning only the plugin's 5 keys made every re-parse rewrite the file
+// WITHOUT excluded-models. ParseAuth must carry user fields through.
+func TestHandleParseAuth_PreservesUserFields(t *testing.T) {
+	uid := "019eedc2-d993-7afc-82ee-ed182980ae6b"
+	raw := []byte(`{
+		"type": "qoderwork",
+		"provider": "qoderwork",
+		"disabled": false,
+		"note": "CN · 积分未知",
+		"excluded-models": ["qmodel_preview", "qmodel_legacy"],
+		"prefix": "qw",
+		"priority": 5,
+		"auth": {"accessToken":"jt-a","refreshToken":"jrt-r","expiresAt":1,"domain":"qoder.com.cn"},
+		"account": {"uid":"` + uid + `","nickname":"n"}
+	}`)
+	req := pluginapi.AuthParseRequest{
+		Provider: providerName,
+		Path:     "/root/.cli-proxy-api/qoderwork-" + uid + ".json",
+		FileName: "qoderwork-" + uid + ".json",
+		RawJSON:  raw,
+	}
+	body, _ := json.Marshal(req)
+	out, err := handleParseAuth(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := decodeParseAuth(t, out)
+	if !resp.Handled {
+		t.Fatal("qoderwork file not handled")
+	}
+	meta := resp.Auth.Metadata
+	if got, ok := meta["excluded-models"].([]any); !ok || len(got) != 2 {
+		t.Fatalf("excluded-models lost through ParseAuth: %v", meta["excluded-models"])
+	}
+	if meta["prefix"] != "qw" {
+		t.Fatalf("prefix lost: %v", meta["prefix"])
+	}
+	if p, ok := meta["priority"].(float64); !ok || p != 5 {
+		t.Fatalf("priority lost: %v", meta["priority"])
+	}
+	if meta["type"] != providerName || meta["provider"] != providerName {
+		t.Fatalf("type/provider: %v %v", meta["type"], meta["provider"])
+	}
+	if _, ok := meta["auth"]; ok {
+		t.Fatal("auth leaked into ParseAuth metadata")
+	}
+	if _, ok := meta["account"]; ok {
+		t.Fatal("account leaked into ParseAuth metadata")
+	}
+}
+
+func TestHandleParseAuth_HonorsFileDisabled(t *testing.T) {
+	uid := "019eedc2-d993-7afc-82ee-ed182980ae6b"
+	raw := []byte(`{
+		"type": "qoderwork",
+		"disabled": true,
+		"note": "CN · 已禁用",
+		"auth": {"accessToken":"jt-a","refreshToken":"jrt-r","expiresAt":1,"domain":"qoder.com.cn"},
+		"account": {"uid":"` + uid + `"}
+	}`)
+	req := pluginapi.AuthParseRequest{
+		Provider: providerName,
+		FileName: "qoderwork-" + uid + ".json",
+		RawJSON:  raw,
+	}
+	body, _ := json.Marshal(req)
+	out, err := handleParseAuth(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := decodeParseAuth(t, out)
+	if !resp.Auth.Disabled {
+		t.Fatal("disabled:true on file was lost — parse would resurrect a disabled account")
+	}
+	if resp.Auth.Metadata["disabled"] != true {
+		t.Fatalf("disabled not reflected in metadata: %v", resp.Auth.Metadata["disabled"])
+	}
+}
+
+func TestUserFieldsFromAuthJSON(t *testing.T) {
+	got := userFieldsFromAuthJSON(existingFileWithUserFields())
+	if got == nil {
+		t.Fatal("nil")
+	}
+	if _, ok := got["auth"]; ok {
+		t.Fatal("auth must be stripped")
+	}
+	if _, ok := got["account"]; ok {
+		t.Fatal("account must be stripped")
+	}
+	if _, ok := got["excluded-models"]; !ok {
+		t.Fatal("excluded-models must be kept")
+	}
+	if userFieldsFromAuthJSON(nil) != nil {
+		t.Fatal("nil input should give nil")
+	}
+	if userFieldsFromAuthJSON([]byte(`{"auth":{},"account":{}}`)) != nil {
+		t.Fatal("only-nested should give nil")
 	}
 }

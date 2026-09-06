@@ -327,7 +327,9 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.8.2"
+// The default mirrors VERSION so a build without ldflags reports the right
+// version to the host plugin registry.
+var version = "0.8.7"
 
 func wbRegistration() registration {
 	return registration{
@@ -628,7 +630,17 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 	// By leaving ID empty, CPA falls back to authIDForPath(path) which
 	// derives ID from the file path → always matches the watcher's key.
 	// FileName is also echoed back to avoid rename-based duplicates.
-	ad := toAuthDataOpts(sa, nil, false)
+	//
+	// Metadata base = the file's own top-level fields. The host persists an
+	// auth as mergedStorageJSON(StorageJSON, Metadata), so returning only our
+	// 5 keys here would make every watcher re-parse rewrite the file without
+	// the user's excluded-models / prefix / proxy_url / priority / headers —
+	// silently undoing a panel model-disable within the same second. disabled
+	// is likewise read from the file so a re-parse never resurrects an account
+	// the lifecycle disabled.
+	existing := userFieldsFromAuthJSON(req.RawJSON)
+	disabled := parseDisabledFromAuthJSON(req.RawJSON)
+	ad := toAuthDataOptsMeta(sa, nil, disabled, existing)
 	ad.ID = "" // let host compute from path (prevents ID mismatch dupes)
 	if fn := strings.TrimSpace(req.FileName); fn != "" {
 		ad.FileName = fn

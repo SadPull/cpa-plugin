@@ -189,3 +189,115 @@ func TestToAuthDataForRefresh_PreservesMetadata(t *testing.T) {
 		t.Fatalf("type: %v", ad.Metadata["type"])
 	}
 }
+
+// TestHandleParseAuth_PreservesUserFields is the regression guard for the
+// PRIMARY model-disable bug: the host persists an auth as
+// mergedStorageJSON(StorageJSON, Metadata), so whatever metadata ParseAuth
+// returns becomes the file's top-level keys on the next watcher re-parse.
+// Returning only the plugin's 5 keys made every re-parse rewrite the file
+// WITHOUT excluded-models, silently undoing the panel's model-disable within
+// the same second (observed live at 2026-09-06 22:53:40). ParseAuth must now
+// carry the file's user fields through into AuthData.Metadata.
+func TestHandleParseAuth_PreservesUserFields(t *testing.T) {
+	uid := "a7eb4760-9486-47c8-8979-8f27a08613b4"
+	raw := []byte(`{
+		"type": "workbuddy",
+		"provider": "workbuddy",
+		"disabled": false,
+		"note": "CN · 积分未知",
+		"excluded-models": ["hy3", "kimi-k2.6"],
+		"prefix": "wb",
+		"priority": 5,
+		"auth": {"accessToken":"a","refreshToken":"r","expiresAt":1,"domain":"www.codebuddy.cn"},
+		"account": {"uid":"` + uid + `","nickname":"n"}
+	}`)
+	req := pluginapi.AuthParseRequest{
+		Provider: providerName,
+		Path:     "/root/.cli-proxy-api/workbuddy-" + uid + ".json",
+		FileName: "workbuddy-" + uid + ".json",
+		RawJSON:  raw,
+	}
+	body, _ := json.Marshal(req)
+	out, err := handleParseAuth(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := decodeParseAuth(t, out)
+	if !resp.Handled {
+		t.Fatal("workbuddy file not handled")
+	}
+	meta := resp.Auth.Metadata
+	if got, ok := meta["excluded-models"].([]any); !ok || len(got) != 2 {
+		t.Fatalf("excluded-models lost through ParseAuth: %v", meta["excluded-models"])
+	}
+	if meta["prefix"] != "wb" {
+		t.Fatalf("prefix lost: %v", meta["prefix"])
+	}
+	if p, ok := meta["priority"].(float64); !ok || p != 5 {
+		t.Fatalf("priority lost: %v", meta["priority"])
+	}
+	// Plugin-owned keys still normalized.
+	if meta["type"] != providerName || meta["provider"] != providerName {
+		t.Fatalf("type/provider: %v %v", meta["type"], meta["provider"])
+	}
+	// Nested credential blocks must NOT be duplicated into Metadata.
+	if _, ok := meta["auth"]; ok {
+		t.Fatal("auth leaked into ParseAuth metadata")
+	}
+	if _, ok := meta["account"]; ok {
+		t.Fatal("account leaked into ParseAuth metadata")
+	}
+}
+
+// TestHandleParseAuth_HonorsFileDisabled guards the secondary parse bug: a
+// re-parse must not resurrect an account the lifecycle disabled (disabled:true
+// on disk must survive into AuthData.Disabled).
+func TestHandleParseAuth_HonorsFileDisabled(t *testing.T) {
+	uid := "a7eb4760-9486-47c8-8979-8f27a08613b4"
+	raw := []byte(`{
+		"type": "workbuddy",
+		"disabled": true,
+		"note": "CN · 已禁用",
+		"auth": {"accessToken":"a","refreshToken":"r","expiresAt":1,"domain":"www.codebuddy.cn"},
+		"account": {"uid":"` + uid + `"}
+	}`)
+	req := pluginapi.AuthParseRequest{
+		Provider: providerName,
+		FileName: "workbuddy-" + uid + ".json",
+		RawJSON:  raw,
+	}
+	body, _ := json.Marshal(req)
+	out, err := handleParseAuth(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := decodeParseAuth(t, out)
+	if !resp.Auth.Disabled {
+		t.Fatal("disabled:true on file was lost — parse would resurrect a disabled account")
+	}
+	if resp.Auth.Metadata["disabled"] != true {
+		t.Fatalf("disabled not reflected in metadata: %v", resp.Auth.Metadata["disabled"])
+	}
+}
+
+func TestUserFieldsFromAuthJSON(t *testing.T) {
+	got := userFieldsFromAuthJSON(existingFileWithUserFields())
+	if got == nil {
+		t.Fatal("nil")
+	}
+	if _, ok := got["auth"]; ok {
+		t.Fatal("auth must be stripped")
+	}
+	if _, ok := got["account"]; ok {
+		t.Fatal("account must be stripped")
+	}
+	if _, ok := got["excluded-models"]; !ok {
+		t.Fatal("excluded-models must be kept")
+	}
+	if userFieldsFromAuthJSON(nil) != nil {
+		t.Fatal("nil input should give nil")
+	}
+	if userFieldsFromAuthJSON([]byte(`{"auth":{},"account":{}}`)) != nil {
+		t.Fatal("only-nested should give nil")
+	}
+}

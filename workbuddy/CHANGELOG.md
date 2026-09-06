@@ -6,16 +6,37 @@
 
 The OAuth model-disable feature (`excluded-models` on the auth file) appeared
 broken for workbuddy credentials: the management panel could write the field,
-but it vanished within seconds. Root cause: every plugin rewrite path rebuilt
-the auth file from a fixed 7-key shape (`buildAuthFileJSON`) and silently
-dropped all user-managed top-level keys — `excluded-models`, `prefix`,
-`proxy_url`, `priority`, `headers`, panel-set metadata. The checkin scheduler
-(`syncAuthNote`), lifecycle disable/re-enable, and token refresh all hit this.
+but it vanished within the same second.
 
+**Root cause (deeper than the rewrite paths).** The host persists an auth as
+`mergedStorageJSON(StorageJSON, auth.Metadata)` — the file's top-level keys
+come from the Metadata the plugin returned. Two independent writers wiped
+user fields:
+
+1. **`ParseAuth` (the primary culprit).** The host calls it on every watcher
+   re-parse — including the re-parse triggered by the panel's own PATCH. The
+   plugin returned only its 5 metadata keys, so `Manager.Update`'s internal
+   `m.persist(ctx, auth)` (conductor.go) immediately wrote the file back
+   WITHOUT `excluded-models`. Observed live 2026-09-06 22:53:40: WRITE →
+   `Reconciled models +0,-1` → second WRITE in the same second → `hash match,
+   skipping` → `+1,-0`, with `note` reset to the parse-path value.
+   `disabled` was also hardcoded `false` here, so any re-parse could
+   resurrect an account the lifecycle had disabled.
+2. **Plugin rewrite paths.** `buildAuthFileJSON` rebuilt the file from a fixed
+   7-key shape, dropping `excluded-models`, `prefix`, `proxy_url`, `priority`,
+   `headers` and panel-set metadata. Hit by `syncAuthNote` (checkin
+   scheduler), lifecycle disable/re-enable/delete, keepalive token persist and
+   credential re-import.
+
+Fixes:
+
+- `main.go handleParseAuth` — metadata base = `userFieldsFromAuthJSON(req.RawJSON)`
+  (file's own top-level fields, nested `auth`/`account` stripped) and
+  `disabled` read from the file. ParseAuth output now round-trips user fields.
 - `authfile.go` — new `buildAuthFileJSONPreserve(current, ...)`: starts from
   the current physical file (round-trip), overwrites only the 7 plugin-owned
   keys, keeps everything else. `buildAuthFileJSON` retained for brand-new
-  files (first login).
+  files (first login). New `userFieldsFromAuthJSON(raw)` helper.
 - `lifecycle.go` — `disableAuth` / `reenableAuth` / `deleteAuth` (no-path
   fallback) / `syncAuthNote` now pass `phys.JSON` as the preserve base.
 - `oauth.go` — refresh path: new `refreshMetadataBase(req)` resolves the
@@ -24,10 +45,13 @@ dropped all user-managed top-level keys — `excluded-models`, `prefix`,
   re-parse and loses user fields), falling back to `req.Metadata`.
   `toAuthDataForRefresh` merges it via the extended
   `enrichAuthMetadata(sa, cr, disabled, existing)` so the host's post-refresh
-  persist keeps `excluded-models` etc.
+  persist keeps `excluded-models` etc. New `physicalAuthByFileName` maps
+  auth.ID → physical file via host.auth.list + host.auth.get.
 - `credits_handler.go` — re-import of an existing credential now preserves
   the current file's user fields instead of flattening to the fixed shape.
-- `field_preservation_test.go` — regression tests for all of the above.
+- `field_preservation_test.go` — regression tests for all of the above
+  (ParseAuth preservation, ParseAuth disabled, preserve builder, metadata
+  merge, refresh base).
 
 ## 0.8.6
 

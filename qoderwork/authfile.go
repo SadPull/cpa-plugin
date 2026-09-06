@@ -257,6 +257,33 @@ func parseDisabledFromAuthJSON(raw []byte) bool {
 	return m.Disabled
 }
 
+// userFieldsFromAuthJSON extracts the user-managed top-level fields from a
+// physical auth file, for use as a metadata base. The host persists an auth
+// as mergedStorageJSON(StorageJSON, auth.Metadata) — i.e. the file's top-level
+// keys come from the Metadata the plugin returned at parse time. If ParseAuth
+// returns only its own 5 keys, every watcher re-parse (triggered by ANY file
+// write, including the panel's own PATCH) makes the host persist the file back
+// WITHOUT excluded-models / prefix / proxy_url / priority / headers, silently
+// undoing the user's model-disable setting within the same second.
+//
+// Nested credential blocks (auth/account) are excluded — they travel in
+// StorageJSON, not Metadata. Mirrors the workbuddy helper.
+func userFieldsFromAuthJSON(raw []byte) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil || doc == nil {
+		return nil
+	}
+	delete(doc, "auth")
+	delete(doc, "account")
+	if len(doc) == 0 {
+		return nil
+	}
+	return doc
+}
+
 // isSafeAuthPath rejects non-qoderwork filenames, empty paths, and
 // traversal attempts. It validates both the basename pattern AND that the path
 // does not escape via ".." segments. Callers that need to confine deletes to
