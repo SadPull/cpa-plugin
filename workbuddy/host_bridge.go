@@ -150,16 +150,33 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 	if err != nil {
 		return hostHTTPDoDirect(req, bodyBytes)
 	}
+	return decodeHostHTTPResult(result)
+}
+
+// decodeHostHTTPResult decodes the host.http.do result payload, accepting both
+// wire spellings. The host marshals pluginapi.HTTPResponse as-is — its fields
+// carry NO json tags, so the live wire keys are "StatusCode"/"Headers"/"Body" —
+// while the stream bridge uses snake_case wire types. With a snake_case-only
+// tag, "StatusCode" never matches (the underscore defeats encoding/json's
+// case-insensitive fallback) and every bridged call decoded as status 0,
+// breaking exact `!= 200` checks like the models API's (only `>= 400` guards,
+// e.g. check-in, ever worked).
+func decodeHostHTTPResult(result []byte) (*hostHTTPResponse, error) {
 	var resp struct {
-		StatusCode int                 `json:"status_code"`
-		Headers    map[string][]string `json:"headers,omitempty"`
-		Body       []byte              `json:"body,omitempty"`
+		StatusCode     int                 `json:"status_code"`
+		StatusCodeWire int                 `json:"StatusCode"`
+		Headers        map[string][]string `json:"headers,omitempty"`
+		Body           []byte              `json:"body,omitempty"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
 		return nil, fmt.Errorf("decode host.http.do response: %w", err)
 	}
+	status := resp.StatusCode
+	if status == 0 {
+		status = resp.StatusCodeWire
+	}
 	return &hostHTTPResponse{
-		StatusCode: resp.StatusCode,
+		StatusCode: status,
 		Headers:    http.Header(resp.Headers),
 		Body:       resp.Body,
 	}, nil
