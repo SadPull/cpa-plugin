@@ -2,11 +2,14 @@
 dist/
 *.so
 *.h
+*.dll
+*.exe
 
 # Go
 *.test
 *.out
 workbuddy/workbuddy-plus
+qoderwork/qoderwork
 
 # local toolchain scratch (portable Go/gcc used for verification only)
 .gotoolchain/
