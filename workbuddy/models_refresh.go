@@ -95,7 +95,7 @@ func startModelsRefresher() {
 // lines ("timer"). A realm with no usable account is a silent skip.
 func refreshAllRealmModels(reason string) {
 	for _, realm := range []string{realmGlobal, realmCN} {
-		changed, added, removed, err := refreshRealmModels(realm)
+		changed, count, added, removed, err := refreshRealmModels(realm)
 		if err != nil {
 			if !errors.Is(err, errNoRealmAuth) {
 				wbLogf("warn", "models refresh (%s, %s): %v", reason, realm, err)
@@ -103,6 +103,9 @@ func refreshAllRealmModels(reason string) {
 			continue
 		}
 		if !changed {
+			// Per-tick summary: proves the refresher is alive between the
+			// (rare) real catalog changes.
+			wbLogf("info", "models catalog check (%s, %s): %d models, unchanged", reason, realm, count)
 			continue
 		}
 		wbLogf("info", "models catalog changed (%s, %s): +%s -%s",
@@ -116,17 +119,17 @@ func refreshAllRealmModels(reason string) {
 // refreshRealmModels refetches one realm's catalog with any of its accounts
 // and diffs the fresh ID set against the realm's baseline. On success the
 // serving cache is refreshed too — same data model.for_auth would answer.
-func refreshRealmModels(realm string) (changed bool, added, removed []string, err error) {
+func refreshRealmModels(realm string) (changed bool, count int, added, removed []string, err error) {
 	before := refreshBaselineIDs(realm)
 	models, err := fetchModelsViaAnyAuth(realm)
 	if err != nil {
-		return false, nil, nil, err
+		return false, 0, nil, nil, err
 	}
 	storeDynamicModels(models)
 	after := modelIDSet(models)
 	rememberRealmBaseline(realm, after)
 	added, removed = diffStringSets(before, after)
-	return len(added) > 0 || len(removed) > 0, added, removed, nil
+	return len(added) > 0 || len(removed) > 0, len(models), added, removed, nil
 }
 
 // realmBaselines holds the last fetched ID set per realm, keyed by realm.

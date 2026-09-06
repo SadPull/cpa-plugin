@@ -66,9 +66,9 @@ func TestRefreshRealmModelsNoAuth(t *testing.T) {
 	resetRealmBaselines()
 	defer func() { resetDynamicModelsCache(); resetRealmBaselines() }()
 
-	changed, added, removed, err := refreshRealmModels(realmCN)
-	if changed || added != nil || removed != nil {
-		t.Fatalf("unexpected change report: %v %+v %+v", changed, added, removed)
+	changed, count, added, removed, err := refreshRealmModels(realmCN)
+	if changed || count != 0 || added != nil || removed != nil {
+		t.Fatalf("unexpected change report: %v %d %+v %+v", changed, count, added, removed)
 	}
 	if err != errNoRealmAuth {
 		t.Fatalf("err = %v, want errNoRealmAuth", err)
