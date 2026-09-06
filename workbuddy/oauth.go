@@ -201,7 +201,64 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	// refreshed credential itself after Refresh returns (conductor.go
 	// refreshAuth → m.Update → persist). Writing from the plugin too would
 	// double-write the file.
-	return okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa)})
+	return okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa, refreshMetadataBase(req))})
+}
+
+// refreshMetadataBase resolves the metadata base for the refresh persist.
+//
+// Priority: (1) the physical auth file's top-level fields — authoritative,
+// because the in-memory auth.Metadata is rebuilt from the plugin's parse
+// output on every watcher re-parse and therefore loses user fields like
+// excluded-models within seconds of the panel writing them; (2) fall back to
+// req.Metadata (the host-managed live metadata) when the file cannot be read.
+// Nested credential keys (auth/account) are stripped — they belong to
+// StorageJSON, not Metadata.
+func refreshMetadataBase(req pluginapi.AuthRefreshRequest) map[string]any {
+	var base map[string]any
+	if phys := physicalAuthByFileName(req.AuthID); phys != nil && len(phys.JSON) > 0 {
+		var doc map[string]any
+		if err := json.Unmarshal(phys.JSON, &doc); err == nil && doc != nil {
+			base = doc
+		}
+	}
+	if base == nil && len(req.Metadata) > 0 {
+		base = map[string]any{}
+		for k, v := range req.Metadata {
+			base[k] = v
+		}
+	}
+	if base == nil {
+		return nil
+	}
+	delete(base, "auth")
+	delete(base, "account")
+	return base
+}
+
+// physicalAuthByFileName maps an auth file name (auth.ID / AuthData.FileName,
+// the path relative to the auth dir) to the physical file via host.auth.list +
+// host.auth.get. Returns nil when the credential cannot be located. Used by
+// the refresh path (fall back to req.Metadata) and the import path (re-import
+// of an existing credential must not drop user-managed fields).
+func physicalAuthByFileName(authID string) *hostAuthPhysical {
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return nil
+	}
+	files, err := hostAuthList()
+	if err != nil {
+		return nil
+	}
+	for _, f := range files {
+		if f.ID != authID {
+			continue
+		}
+		phys, err := hostAuthGetPhysical(f.AuthIndex)
+		if err == nil && phys != nil {
+			return phys
+		}
+	}
+	return nil
 }
 
 // preserveExpiry reuses the previous token's expiresAt when the refresh
@@ -224,8 +281,14 @@ func preserveExpiry(newExpiry, oldExpiry int64) int64 {
 // NEW file, and the old one stays → duplicate auth records.
 //
 // Returning empty FileName = "keep what you had" → no rename, no dup.
-func toAuthDataForRefresh(sa *storedAuth) pluginapi.AuthData {
-	ad := toAuthDataOpts(sa, nil, false)
+//
+// existingMeta is the live host-managed metadata the host handed us in
+// AuthRefreshRequest.Metadata (already parsed from the current auth file).
+// We merge it so user-set top-level fields (excluded-models, prefix,
+// proxy_url, priority, headers...) survive the host's post-refresh persist —
+// otherwise the returned 5-key metadata would wholesale replace them.
+func toAuthDataForRefresh(sa *storedAuth, existingMeta map[string]any) pluginapi.AuthData {
+	ad := toAuthDataOptsMeta(sa, nil, false, existingMeta)
 	ad.FileName = "" // let host backfill original
 	ad.ID = ""       // let host compute from path (prevents ID mismatch dupes)
 	return ad

@@ -116,7 +116,7 @@ func TestToAuthDataForRefresh_EmptyFileNameAndID(t *testing.T) {
 		Auth:    storedTokens{AccessToken: "a", RefreshToken: "r", Domain: "www.codebuddy.cn"},
 		Account: storedAccount{UID: "u-1", Nickname: "n"},
 	}
-	ad := toAuthDataForRefresh(sa)
+	ad := toAuthDataForRefresh(sa, nil)
 	if ad.FileName != "" {
 		t.Fatalf("FileName=%q want empty", ad.FileName)
 	}

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.8.7
+
+### Fix: auth-file rewrites no longer drop user-managed fields
+
+The OAuth model-disable feature (`excluded-models` on the auth file) appeared
+broken for workbuddy credentials: the management panel could write the field,
+but it vanished within seconds. Root cause: every plugin rewrite path rebuilt
+the auth file from a fixed 7-key shape (`buildAuthFileJSON`) and silently
+dropped all user-managed top-level keys — `excluded-models`, `prefix`,
+`proxy_url`, `priority`, `headers`, panel-set metadata. The checkin scheduler
+(`syncAuthNote`), lifecycle disable/re-enable, and token refresh all hit this.
+
+- `authfile.go` — new `buildAuthFileJSONPreserve(current, ...)`: starts from
+  the current physical file (round-trip), overwrites only the 7 plugin-owned
+  keys, keeps everything else. `buildAuthFileJSON` retained for brand-new
+  files (first login).
+- `lifecycle.go` — `disableAuth` / `reenableAuth` / `deleteAuth` (no-path
+  fallback) / `syncAuthNote` now pass `phys.JSON` as the preserve base.
+- `oauth.go` — refresh path: new `refreshMetadataBase(req)` resolves the
+  metadata base from the physical auth file (authoritative — in-memory
+  `auth.Metadata` is rebuilt from the plugin's parse output on every watcher
+  re-parse and loses user fields), falling back to `req.Metadata`.
+  `toAuthDataForRefresh` merges it via the extended
+  `enrichAuthMetadata(sa, cr, disabled, existing)` so the host's post-refresh
+  persist keeps `excluded-models` etc.
+- `credits_handler.go` — re-import of an existing credential now preserves
+  the current file's user fields instead of flattening to the fixed shape.
+- `field_preservation_test.go` — regression tests for all of the above.
+
 ## 0.8.6
 
 ### Model catalog refresh + models-API field rename

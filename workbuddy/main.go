@@ -645,6 +645,13 @@ func toAuthData(sa *storedAuth) pluginapi.AuthData {
 
 // toAuthDataOpts builds AuthData with optional credits snapshot and disabled flag.
 func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi.AuthData {
+	return toAuthDataOptsMeta(sa, cr, disabled, nil)
+}
+
+// toAuthDataOptsMeta is toAuthDataOpts with an explicit metadata base. The
+// refresh path passes the live host-managed metadata (AuthRefreshRequest.
+// Metadata) so user-set fields survive the rewrite; parse/login pass nil.
+func toAuthDataOptsMeta(sa *storedAuth, cr *creditsSummary, disabled bool, existingMeta map[string]any) pluginapi.AuthData {
 	storage, _ := json.Marshal(sa)
 	id := providerName
 	fileName := authFileName
@@ -655,7 +662,7 @@ func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi
 		}
 	}
 	label := labelForAuth(sa)
-	meta := enrichAuthMetadata(sa, cr, disabled)
+	meta := enrichAuthMetadata(sa, cr, disabled, existingMeta)
 	// Surface the models_refresh push stamp as a routing attribute: the host
 	// only dispatches a Modify (and re-registers models) when the PARSED auth
 	// differs (authEqual on coreauth.Auth). The stamp must therefore appear

@@ -171,6 +171,17 @@ func hostAuthSaveJSON(name string, raw []byte) error {
 
 // lifecycleStateUnchanged avoids redundant saves when note/disabled unchanged.
 
+// buildAuthFileJSON produces host-save payload: nested storage + top-level metadata.
+// extra merges additional top-level keys (optional).
+//
+// The output is built from a FIXED 7-key shape, so any top-level field the
+// user (or the management panel) added to the auth file — excluded-models,
+// prefix, proxy_url, priority, headers, note overrides, etc. — is silently
+// dropped whenever the plugin rewrites the file. Callers that rewrite an
+// EXISTING file must use buildAuthFileJSONPreserve instead (round-trips the
+// current physical JSON). This fixed-shape builder is only appropriate for
+// creating a brand-new credential file (e.g. import / fresh login).
+
 func buildAuthFileJSON(sa *storedAuth, disabled bool, note string, extra map[string]any) ([]byte, error) {
 	if sa == nil {
 		return nil, fmt.Errorf("nil storedAuth")
@@ -196,6 +207,47 @@ func buildAuthFileJSON(sa *storedAuth, disabled bool, note string, extra map[str
 		out[k] = v
 	}
 	return json.Marshal(out)
+}
+
+// buildAuthFileJSONPreserve rewrites an EXISTING auth file without dropping
+// user-managed top-level fields. It starts from the current physical JSON
+// (current), overwrites only the 7 keys the plugin owns
+// (type/provider/logo/disabled/note/auth/account), then applies extra.
+// Unknown keys — excluded-models, prefix, proxy_url, priority, headers and
+// any panel-set metadata — pass through untouched. If current is empty or
+// not a JSON object (e.g. first-ever write), it behaves like buildAuthFileJSON.
+//
+// This mirrors stampAuthJSON's map[string]json.RawMessage round-trip so that
+// "no field — known or user-added — is lost" holds for every rewrite path,
+// not just the models-catalog push.
+
+func buildAuthFileJSONPreserve(current []byte, sa *storedAuth, disabled bool, note string, extra map[string]any) ([]byte, error) {
+	if sa == nil {
+		return nil, fmt.Errorf("nil storedAuth")
+	}
+	base := map[string]any{}
+	if err := json.Unmarshal(current, &base); err != nil || base == nil {
+		base = map[string]any{}
+	}
+	storage, err := json.Marshal(sa)
+	if err != nil {
+		return nil, err
+	}
+	var nested map[string]any
+	if err := json.Unmarshal(storage, &nested); err != nil {
+		return nil, err
+	}
+	base["type"] = providerName
+	base["provider"] = providerName
+	base["logo"] = pluginLogoURL
+	base["disabled"] = disabled
+	base["note"] = note
+	base["auth"] = nested["auth"]
+	base["account"] = nested["account"]
+	for k, v := range extra {
+		base[k] = v
+	}
+	return json.Marshal(base)
 }
 
 // parseDisabledFromAuthJSON reads top-level disabled from physical auth JSON.

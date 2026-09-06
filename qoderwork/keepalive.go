@@ -164,11 +164,14 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 // The host's file watcher reloads it; we deliberately do NOT dual-write the
 // physical path (same rule as hostAuthPersist).
 //
-// MUST go through buildAuthFileJSON with the CURRENT top-level fields from
-// the physical file — a bare json.Marshal(sa) would drop type/provider/logo/
-// disabled/note, resurrecting accounts that lifecycle disabled (P0: a 22:00
-// keepalive refresh used to wipe disabled:true and put the account back into
-// rotation).
+// MUST go through buildAuthFileJSONPreserve with the CURRENT physical file as
+// base — a bare json.Marshal(sa) would drop type/provider/logo/disabled/note,
+// resurrecting accounts that lifecycle disabled (P0: a 22:00 keepalive refresh
+// used to wipe disabled:true and put the account back into rotation), and a
+// fixed-shape rebuild would additionally drop user-managed top-level fields
+// (excluded-models / prefix / proxy_url / priority / headers). The preserve
+// variant keeps every unknown key while refreshing the tokens + the note
+// carried over from disk.
 func persistAuthTokens(authIndex string, sa *storedAuth) error {
 	phys, err := hostAuthGetPhysical(authIndex)
 	if err != nil {
@@ -187,7 +190,7 @@ func persistAuthTokens(authIndex string, sa *storedAuth) error {
 			note = s
 		}
 	}
-	raw, err := buildAuthFileJSON(sa, phys.Disabled, note, nil)
+	raw, err := buildAuthFileJSONPreserve(phys.JSON, sa, phys.Disabled, note, nil)
 	if err != nil {
 		return err
 	}

@@ -95,10 +95,12 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 	name := authFileNameFor(sa)
 	path := ""
 	legacyPath := ""
+	var current []byte
 	if phys != nil {
 		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
+		current = phys.JSON
 	}
-	raw, err := buildAuthFileJSON(sa, true, note, nil)
+	raw, err := buildAuthFileJSONPreserve(current, sa, true, note, nil)
 	if err != nil {
 		return err
 	}
@@ -127,10 +129,12 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 	name := authFileNameFor(sa)
 	path := ""
 	legacyPath := ""
+	var current []byte
 	if err == nil {
 		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
+		current = phys.JSON
 	}
-	raw, err := buildAuthFileJSON(sa, false, note, nil)
+	raw, err := buildAuthFileJSONPreserve(current, sa, false, note, nil)
 	if err != nil {
 		return err
 	}
@@ -171,7 +175,7 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 	if path == "" {
 		// Last resort: disable instead of silent no-op (never invent a random path).
 		note := displayNote(sa, nil, true) + " · 应删除但无 path"
-		raw, berr := buildAuthFileJSON(sa, true, note, nil)
+		raw, berr := buildAuthFileJSONPreserve(phys.JSON, sa, true, note, nil)
 		if berr != nil {
 			return fmt.Errorf("no path and build failed: %w", berr)
 		}
@@ -252,8 +256,10 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 	name := authFileNameFor(sa)
 	path := ""
 	legacyPath := ""
+	var current []byte
 	if err == nil {
 		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
+		current = phys.JSON
 		// re-read disabled from disk as source of truth
 		disabled = parseDisabledFromAuthJSON(phys.JSON)
 		note = displayNote(sa, cr, disabled)
@@ -261,7 +267,7 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 	if lifecycleStateUnchanged(authID, disabled, note) {
 		return nil
 	}
-	raw, err := buildAuthFileJSON(sa, disabled, note, nil)
+	raw, err := buildAuthFileJSONPreserve(current, sa, disabled, note, nil)
 	if err != nil {
 		return err
 	}
@@ -529,13 +535,21 @@ func listEntryMatchesUID(f pluginapi.HostAuthFileEntry, uid, wantName string) bo
 }
 
 // enrichAuthMetadata builds Metadata map for AuthData (type/logo/note/disabled).
-func enrichAuthMetadata(sa *storedAuth, cr *creditsSummary, disabled bool) map[string]any {
-	note := displayNote(sa, cr, disabled)
-	return map[string]any{
-		"type":     providerName,
-		"provider": providerName,
-		"logo":     pluginLogoURL,
-		"note":     note,
-		"disabled": disabled,
+// existing carries the live host-managed metadata for the auth (from
+// AuthRefreshRequest.Metadata, or nil for parse/login paths). Its keys pass
+// through untouched — excluded-models / prefix / proxy_url / priority /
+// headers and any panel-set fields are preserved; the plugin only overwrites
+// the 5 keys it owns. Without the base, a token refresh would replace the
+// whole metadata map and silently drop those user fields.
+func enrichAuthMetadata(sa *storedAuth, cr *creditsSummary, disabled bool, existing map[string]any) map[string]any {
+	meta := map[string]any{}
+	for k, v := range existing {
+		meta[k] = v
 	}
+	meta["type"] = providerName
+	meta["provider"] = providerName
+	meta["logo"] = pluginLogoURL
+	meta["note"] = displayNote(sa, cr, disabled)
+	meta["disabled"] = disabled
+	return meta
 }

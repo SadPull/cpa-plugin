@@ -35,11 +35,18 @@ func handleImportPAT(req pluginapi.ManagementRequest) map[string]any {
 	ui, _ := fetchUserInfo(tok.Token) // best-effort
 	sa := buildStoredAuthFromJobToken(pat, tok, ui)
 
-	fileJSON, err := buildAuthFileJSON(sa, false, displayNote(sa, nil, false), nil)
+	// Re-importing an existing credential must not drop user-managed fields
+	// (excluded-models / prefix / priority / headers ...), so base the write on
+	// the current physical file when one exists.
+	auth := toAuthData(sa)
+	var current []byte
+	if phys := physicalAuthByFileName(auth.FileName); phys != nil {
+		current = phys.JSON
+	}
+	fileJSON, err := buildAuthFileJSONPreserve(current, sa, false, displayNote(sa, nil, false), nil)
 	if err != nil {
 		return map[string]any{"success": false, "error": err.Error()}
 	}
-	auth := toAuthData(sa)
 	saveReq := pluginapi.HostAuthSaveRequest{
 		Name: auth.FileName,
 		JSON: fileJSON,
