@@ -416,10 +416,11 @@ type storedAuth struct {
 }
 
 type storedTokens struct {
-	AccessToken  string `json:"accessToken"`
-	RefreshToken string `json:"refreshToken"`
-	ExpiresAt    int64  `json:"expiresAt"`
-	Domain       string `json:"domain"`
+	AccessToken    string `json:"accessToken"`
+	RefreshToken   string `json:"refreshToken"`
+	ExpiresAt      int64  `json:"expiresAt"`
+	Domain         string `json:"domain"`
+	ModelsSyncedAt string `json:"models_synced_at,omitempty"` // models_refresh.go push stamp; a real field so the host's parsed-auth diff sees it
 }
 
 type storedAccount struct {

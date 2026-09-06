@@ -145,15 +145,25 @@ func TestStampAuthJSON(t *testing.T) {
 	if _, ok := m["custom_field"]; !ok {
 		t.Fatal("unknown fields must survive the round-trip")
 	}
-	if string(m["auth"]) != `{"accessToken":"wb-x"}` {
+	// The stamp must land INSIDE the nested auth object as a real
+	// storedTokens field — a top-level key never reaches the host's parsed
+	// auth, so its diff (authEqual) would discard the update unregistered.
+	var auth map[string]json.RawMessage
+	if err := json.Unmarshal(m["auth"], &auth); err != nil {
+		t.Fatal(err)
+	}
+	if string(auth["accessToken"]) != `"wb-x"` {
 		t.Fatalf("nested auth mutated: %s", m["auth"])
 	}
 	var stamp string
-	if err := json.Unmarshal(m["models_synced_at"], &stamp); err != nil || stamp != "2026-09-06T00:00:00Z" {
-		t.Fatalf("models_synced_at = %s (err %v)", m["models_synced_at"], err)
+	if err := json.Unmarshal(auth["models_synced_at"], &stamp); err != nil || stamp != "2026-09-06T00:00:00Z" {
+		t.Fatalf("auth.models_synced_at = %s (err %v)", auth["models_synced_at"], err)
 	}
 	if _, err := stampAuthJSON([]byte(`[1,2]`), "x"); err == nil {
 		t.Fatal("non-object auth JSON must be rejected")
+	}
+	if _, err := stampAuthJSON([]byte(`{"type":"workbuddy"}`), "x"); err == nil {
+		t.Fatal("missing nested auth object must be rejected")
 	}
 }
 

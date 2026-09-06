@@ -324,8 +324,13 @@ func touchRealmAuths(realm string) {
 	}
 }
 
-// stampAuthJSON sets the top-level models_synced_at key, preserving every
-// other field as-is.
+// stampAuthJSON sets auth.models_synced_at inside the NESTED credential
+// object — deliberately not a top-level key. The host's watcher only
+// re-registers models when the PARSED auth changes (authEqual on
+// coreauth.Auth): a top-level unknown key is dropped by the plugin's auth
+// parser, so StorageJSON stays byte-identical and the update is discarded.
+// A real storedTokens field flows into AuthData.StorageJSON, so the diff
+// fires.
 func stampAuthJSON(raw []byte, stamp string) ([]byte, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -334,11 +339,22 @@ func stampAuthJSON(raw []byte, stamp string) ([]byte, error) {
 	if m == nil {
 		return nil, errors.New("auth json is not an object")
 	}
+	var auth map[string]json.RawMessage
+	if len(m["auth"]) == 0 {
+		return nil, errors.New("nested auth object is missing")
+	}
+	if err := json.Unmarshal(m["auth"], &auth); err != nil || auth == nil {
+		return nil, errors.New("nested auth is not an object")
+	}
 	encoded, err := json.Marshal(stamp)
 	if err != nil {
 		return nil, err
 	}
-	m["models_synced_at"] = encoded
+	auth["models_synced_at"] = encoded
+	m["auth"], err = json.Marshal(auth)
+	if err != nil {
+		return nil, err
+	}
 	return json.Marshal(m)
 }
 
