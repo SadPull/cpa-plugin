@@ -10,6 +10,7 @@ dist/
 *.out
 workbuddy/workbuddy-plus
 qoderwork/qoderwork
+qoderwork/qoder
 
 # local toolchain scratch (portable Go/gcc used for verification only)
 .gotoolchain/

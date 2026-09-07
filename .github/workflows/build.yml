@@ -1,7 +1,7 @@
-# Multi-arch CPA plugin build & release (workbuddy + qoderwork).
+# Multi-arch CPA plugin build & release (workbuddy + qoder).
 # Each plugin versions INDEPENDENTLY:
 #   - tag 'workbuddy-v*'  → release workbuddy at that version
-#   - tag 'qoderwork-v*'  → release qoderwork at that version
+#   - tag 'qoder-v*'       → release qoder at that version
 #   - workflow_dispatch   → pick plugin + version manually
 #   - plain push/PR       → CI builds for both (artifacts only, no release)
 #
@@ -14,14 +14,14 @@ on:
   pull_request:
   push:
     branches: [main]
-    tags: ["workbuddy-v*", "qoderwork-v*"]
+    tags: ["workbuddy-v*", "qoder-v*"]
   workflow_dispatch:
     inputs:
       plugin:
         description: "Plugin to release"
         required: true
         type: choice
-        options: [workbuddy, qoderwork]
+        options: [workbuddy, qoder]
       version:
         description: "Version without v (empty = plugin's VERSION file)"
         required: false
@@ -67,52 +67,62 @@ jobs:
         include:
           # workbuddy native
           - id: workbuddy
+            dir: workbuddy
             goos: linux
             goarch: amd64
             runner: ubuntu-24.04
             ext: so
           - id: workbuddy
+            dir: workbuddy
             goos: linux
             goarch: arm64
             runner: ubuntu-24.04-arm
             ext: so
           - id: workbuddy
+            dir: workbuddy
             goos: darwin
             goarch: amd64
             runner: macos-15-intel
             ext: dylib
           - id: workbuddy
+            dir: workbuddy
             goos: darwin
             goarch: arm64
             runner: macos-15
             ext: dylib
           - id: workbuddy
+            dir: workbuddy
             goos: windows
             goarch: amd64
             runner: windows-2025
             ext: dll
-          # qoderwork native
-          - id: qoderwork
+          # qoder native (source directory remains qoderwork)
+          - id: qoder
+            dir: qoderwork
             goos: linux
             goarch: amd64
             runner: ubuntu-24.04
             ext: so
-          - id: qoderwork
+          - id: qoder
+            dir: qoderwork
             goos: linux
             goarch: arm64
             runner: ubuntu-24.04-arm
             ext: so
-          - id: qoderwork
+          - id: qoder
+            dir: qoderwork
             goos: darwin
             goarch: amd64
             runner: macos-15-intel
             ext: dylib
-          - id: qoderwork
+          - id: qoder
+            dir: qoderwork
             goos: darwin
             goarch: arm64
             runner: macos-15
             ext: dylib
-          - id: qoderwork
+          - id: qoder
+            dir: qoderwork
             goos: windows
             goarch: amd64
             runner: windows-2025
@@ -120,26 +130,27 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: ${{ matrix.id }}
+        working-directory: ${{ matrix.dir }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: ${{ matrix.id }}/go.mod
-          cache-dependency-path: ${{ matrix.id }}/go.sum
+          go-version-file: ${{ matrix.dir }}/go.mod
+          cache-dependency-path: ${{ matrix.dir }}/go.sum
 
       - name: Resolve release metadata
         working-directory: .
         run: |
           set -euo pipefail
           PLUGIN="${{ matrix.id }}"
+          DIR="${{ matrix.dir }}"
           # Version resolution: tag of this plugin > dispatch input > VERSION file
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" == ${PLUGIN}-v* ]]; then
             VERSION="${GITHUB_REF_NAME#${PLUGIN}-v}"
           elif [ -n "${{ github.event.inputs.version }}" ] && [ "${{ github.event.inputs.plugin }}" == "${PLUGIN}" ]; then
             VERSION="${{ github.event.inputs.version }}"
           else
-            VERSION="$(tr -d ' \n\r' < ${PLUGIN}/VERSION)"
+            VERSION="$(tr -d ' \n\r' < ${DIR}/VERSION)"
             # CI builds (non-release) get a +ci suffix to avoid clashing with real versions
             if [[ "${GITHUB_REF_TYPE:-}" != "tag" && "${{ github.event_name }}" != "workflow_dispatch" ]]; then
               VERSION="${VERSION}+ci.${GITHUB_RUN_NUMBER}"
@@ -167,7 +178,7 @@ jobs:
         run: |
           set -euo pipefail
           go run ./.github/scripts/package-release.go \
-            -library "${{ matrix.id }}/dist/${LIB_NAME}" \
+            -library "${{ matrix.dir }}/dist/${LIB_NAME}" \
             -archive "${ARCHIVE_NAME}" \
             -checksum "${ARCHIVE_NAME}.sha256"
           python3 - <<'PY'
@@ -199,15 +210,19 @@ jobs:
       matrix:
         include:
           - id: workbuddy
+            dir: workbuddy
             target: windows-arm64
             ext: dll
           - id: workbuddy
+            dir: workbuddy
             target: freebsd-amd64
             ext: so
-          - id: qoderwork
+          - id: qoder
+            dir: qoderwork
             target: windows-arm64
             ext: dll
-          - id: qoderwork
+          - id: qoder
+            dir: qoderwork
             target: freebsd-amd64
             ext: so
     defaults:
@@ -217,8 +232,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: ${{ matrix.id }}/go.mod
-          cache-dependency-path: ${{ matrix.id }}/go.sum
+          go-version-file: ${{ matrix.dir }}/go.mod
+          cache-dependency-path: ${{ matrix.dir }}/go.sum
 
       - name: Resolve release metadata
         id: meta
@@ -230,7 +245,7 @@ jobs:
           elif [ -n "${{ github.event.inputs.version }}" ] && [ "${{ github.event.inputs.plugin }}" == "${PLUGIN}" ]; then
             VERSION="${{ github.event.inputs.version }}"
           else
-            VERSION="$(tr -d ' \n\r' < ${PLUGIN}/VERSION)"
+            VERSION="$(tr -d ' \n\r' < ${{ matrix.dir }}/VERSION)"
           fi
           CLEAN_VERSION="${VERSION%%+*}"
           GOOS_PART="${{ matrix.target }}"
@@ -245,7 +260,7 @@ jobs:
         env:
           GOFLAGS: -trimpath -buildmode=c-shared
         with:
-          dir: ${{ matrix.id }}
+          dir: ${{ matrix.dir }}
           packages: .
           targets: ${{ matrix.target }}
           out-dir: dist/${{ matrix.target }}
@@ -256,12 +271,12 @@ jobs:
       - name: Package plugin
         run: |
           set -euo pipefail
-          rm -f go-cross-bin.h "${{ matrix.id }}/dist/${{ matrix.target }}/${{ matrix.id }}.h" || true
+          rm -f go-cross-bin.h "${{ matrix.dir }}/dist/${{ matrix.target }}/${{ matrix.id }}.h" || true
           LIB=""
           for p in \
-            "${{ matrix.id }}/dist/${{ matrix.target }}/${LIB_NAME}" \
+            "${{ matrix.dir }}/dist/${{ matrix.target }}/${LIB_NAME}" \
             "dist/${{ matrix.target }}/${LIB_NAME}" \
-            "${{ matrix.id }}/dist/${LIB_NAME}"; do
+            "${{ matrix.dir }}/dist/${LIB_NAME}"; do
             if [ -f "$p" ]; then LIB="$p"; break; fi
           done
           if [ -z "$LIB" ]; then
@@ -288,7 +303,7 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '') ||
       startsWith(github.ref, 'refs/tags/workbuddy-v') ||
-      startsWith(github.ref, 'refs/tags/qoderwork-v')
+      startsWith(github.ref, 'refs/tags/qoder-v')
     needs:
       - build
       - build-cross
@@ -308,7 +323,7 @@ jobs:
           elif [[ "${GITHUB_REF_NAME}" == workbuddy-v* ]]; then
             P="workbuddy"; V="${GITHUB_REF_NAME#workbuddy-v}"
           else
-            P="qoderwork"; V="${GITHUB_REF_NAME#qoderwork-v}"
+            P="qoder"; V="${GITHUB_REF_NAME#qoder-v}"
           fi
           echo "plugin=$P" >> "$GITHUB_OUTPUT"
           echo "version=$V" >> "$GITHUB_OUTPUT"
@@ -400,7 +415,7 @@ jobs:
 
           ### Remote update (custom plugin source)
           \`\`\`
-          https://raw.githubusercontent.com/Sliverkiss/cpa-plugin/main/registry.json
+          https://raw.githubusercontent.com/SadPull/cpa-plugin/main/registry.json
           \`\`\`
           EOF
           )

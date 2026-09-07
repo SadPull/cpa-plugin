@@ -12,7 +12,7 @@ import (
 )
 
 // package-release packages a compiled CPA plugin library into a zip whose root
-// entry is the bare library name (workbuddy.so / .dylib / .dll), matching
+// entry is the bare library name (for example qoder.so / .dylib / .dll), matching
 // CLIProxyAPI pluginstore InstallArchive expectations.
 func main() {
 	libraryPath := flag.String("library", "", "path to the compiled plugin library")
@@ -56,7 +56,7 @@ func packageLibrary(libraryPath, archivePath string) ([]byte, error) {
 	if errHeader != nil {
 		return nil, fmt.Errorf("create zip header: %w", errHeader)
 	}
-	// Zip root entry must be workbuddy.so / workbuddy.dylib / workbuddy.dll
+	// The zip root entry must be the bare platform library name.
 	header.Name = filepath.Base(libraryPath)
 	header.Method = zip.Deflate
 	header.SetMode(0o755)
