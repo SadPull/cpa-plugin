@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +27,7 @@ var (
 	// c-shared plugins cannot use host usage.DefaultManager/redisqueue).
 	//
 	// Resolution order (community-style, like codex-auth-importer env injection):
-	//  1) plugins.configs.qoderwork.usage_report_* in config.yaml
+	//  1) plugins.configs.qoder.usage_report_* in config.yaml
 	//  2) env USAGE_REPORT_URL / USAGE_REPORT_KEY / CPAMP_ADMIN_KEY
 	//  3) secret files (docker secrets / bind-mount), e.g. /run/secrets/cpamp_admin_key
 	// Default URL targets the compose service name of CPA-Manager-Plus.
@@ -34,7 +35,7 @@ var (
 	usageReportKey = ""
 	usageReportMu  sync.RWMutex
 
-	// managementAPIKey: plugin-layer auth for /v0/management/plugins/qoderwork/*
+	// managementAPIKey: plugin-layer auth for /v0/management/plugins/qoder/*
 	// write endpoints. When empty, plugin relies on host-side auth (CPA's
 	// management middleware) — that's the historical default and stays
 	// backward-compatible. When set via config_yaml management_key: or env
@@ -62,6 +63,10 @@ func configure(raw []byte) {
 	nextSchedulerMode := schedulerModeOff // reset to default on reconfigure
 	nextKeepaliveAuto := true
 	nextMgmtKey := ""
+	nextDefaultRegion := defaultRegion()
+	nextModelsRefresh := true
+	nextModelsRefreshMins := 10
+	nextModelsRefreshPush := true
 
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
@@ -104,6 +109,28 @@ func configure(raw []byte) {
 					v = strings.Trim(v, "\"'")
 					nextKeepaliveAuto = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
+				if strings.HasPrefix(line, "default_region:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "default_region:"))
+					nextDefaultRegion = strings.Trim(v, "\"'")
+				}
+				if strings.HasPrefix(line, "client_id:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "client_id:"))
+					setConfigClientID(strings.Trim(v, "\"'"))
+				}
+				if strings.HasPrefix(line, "models_refresh:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "models_refresh:"))
+					nextModelsRefresh = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "models_refresh_minutes:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "models_refresh_minutes:"))
+					if n, err := strconv.Atoi(strings.Trim(v, "\"'")); err == nil {
+						nextModelsRefreshMins = n
+					}
+				}
+				if strings.HasPrefix(line, "models_refresh_push:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "models_refresh_push:"))
+					nextModelsRefreshPush = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
 			}
 		}
 	}
@@ -125,10 +152,24 @@ func configure(raw []byte) {
 	keepaliveAuto = nextKeepaliveAuto
 	keepaliveAutoMu.Unlock()
 
+	// Default realm for new logins/imports: config_yaml > env > current.
+	if env := strings.TrimSpace(os.Getenv("QODER_PLUGIN_REGION")); env != "" && nextDefaultRegion == defaultRegion() {
+		nextDefaultRegion = env
+	}
+	setDefaultRegion(nextDefaultRegion)
+
+	// Model catalog refresher: apply config, then make sure the background
+	// goroutine exists (startModelsRefresher is idempotent via sync.Once).
+	setModelsRefreshConfig(nextModelsRefresh, nextModelsRefreshMins, nextModelsRefreshPush)
+	startModelsRefresher()
+
 	// management key: config_yaml > env > keep existing. Empty stays empty
 	// (plugin-layer auth disabled, host middleware still guards).
 	if nextMgmtKey == "" {
-		nextMgmtKey = strings.TrimSpace(os.Getenv("WB_MANAGEMENT_KEY"))
+		nextMgmtKey = firstNonEmpty(
+			strings.TrimSpace(os.Getenv("QODER_MANAGEMENT_KEY")),
+			strings.TrimSpace(os.Getenv("WB_MANAGEMENT_KEY")),
+		)
 	}
 	managementAPIKeyMu.Lock()
 	managementAPIKey = nextMgmtKey

@@ -168,9 +168,9 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 	}
 }
 
-// handleManualCheckin checks in one account (auth_index) or all qoderwork
+// handleManualCheckin checks in one account (auth_index) or all qoder
 // accounts. Unlike the workbuddy three-phase classify/execute/summarize flow,
-// QoderWork's checkin is a simple Bearer GET+POST — we run it directly per
+// Qoder's checkin is a simple Bearer GET+POST — we run it directly per
 // account under an 8s timeout, no classify stage.
 func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	t0 := time.Now()
@@ -264,6 +264,14 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 		return out
 	}
 	out["nickname"] = sa.Account.Nickname
+	// Global accounts have no check-in programme — report skipped, not error.
+	if regionForAuth(sa) != RegionCN {
+		out["success"] = true
+		out["skipped"] = true
+		out["reason"] = "region"
+		out["message"] = "国际版账号无签到活动"
+		return out
+	}
 
 	// Step 1: GET status (5s budget).
 	ci, err := fetchCheckinStatus(sa)
@@ -287,7 +295,7 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 		out["error"] = "claim: " + err.Error()
 		return out
 	}
-	// QoderWork returns {"result":"ALREADY_CLAIMED"} with HTTP 409 — surface
+	// Qoder returns {"result":"ALREADY_CLAIMED"} with HTTP 409 — surface
 	// as already rather than error.
 	if result, _ := res["result"].(string); result == "ALREADY_CLAIMED" {
 		out["success"] = true
@@ -326,7 +334,7 @@ func checkinLockFor(authIndex string) *sync.Mutex {
 // checkProUpgradeEligibility returns whether the account can still claim the
 // one-time Pro Upgrade pack (+1800).
 func checkProUpgradeEligibility(sa *storedAuth) (bool, error) {
-	req, err := http.NewRequest(http.MethodGet, upstreamBaseCN+"/sash/api/v1/me/pro-upgrade/eligibility", nil)
+	req, err := http.NewRequest(http.MethodGet, specFor(RegionCN).OpenAPIBase+"/sash/api/v1/me/pro-upgrade/eligibility", nil)
 	if err != nil {
 		return false, err
 	}
@@ -349,7 +357,7 @@ func checkProUpgradeEligibility(sa *storedAuth) (bool, error) {
 
 // claimProUpgrade claims the one-time Pro Upgrade pack (+1800 credits).
 func claimProUpgrade(sa *storedAuth) (map[string]any, error) {
-	req, err := http.NewRequest(http.MethodPost, endpointProUpgrade, strings.NewReader("{}"))
+	req, err := http.NewRequest(http.MethodPost, specFor(RegionCN).OpenAPIBase+"/sash/api/v1/me/pro-upgrade/claim", strings.NewReader("{}"))
 	if err != nil {
 		return nil, err
 	}

@@ -1,4 +1,4 @@
-// cosy_session.go manages per-auth cosySession instances. Each QoderWork
+// cosy_session.go manages per-auth cosySession instances. Each Qoder
 // account gets one session (RSA-wrapped AES key + identity) reused across
 // requests until the jobToken is refreshed (which changes security_oauth_token
 // and forces a session rebuild).

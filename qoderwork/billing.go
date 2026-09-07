@@ -14,7 +14,7 @@ import (
 )
 
 func billingHeaders(req *http.Request, sa *storedAuth) {
-	// QoderWork billing endpoints authenticate with the active token as a
+	// Qoder billing endpoints authenticate with the active token as a
 	// plain Bearer — jobToken (jt-) or device token (dt-), both accepted
 	// upstream (verified live 2026-07-27). No COSY signing (KNOWLEDGE §2).
 	req.Header.Set("Authorization", "Bearer "+sa.Auth.AccessToken)
@@ -36,9 +36,13 @@ type checkinStatusResponse struct {
 }
 
 func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
+	// Check-in is a CN-realm (QoderWork sash) feature; global accounts have none.
+	if regionForAuth(sa) != RegionCN {
+		return nil, fmt.Errorf("check-in not available on global accounts")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamBaseCN+"/sash/api/v1/me/daily-check-in/status", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, specFor(RegionCN).OpenAPIBase+"/sash/api/v1/me/daily-check-in/status", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -99,10 +103,10 @@ type quotaUsageResponse struct {
 	} `json:"addOnQuota"`
 }
 
-// fetchUserResource queries QoderWork's quota endpoint and aggregates base +
+// fetchUserResource queries Qoder's quota endpoint and aggregates base +
 // add-on credits into the panel's creditsSummary shape.
 func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
-	req, err := http.NewRequest(http.MethodGet, upstreamBaseCN+"/api/v2/quota/usage", nil)
+	req, err := http.NewRequest(http.MethodGet, specFor(regionForAuth(sa)).OpenAPIBase+"/api/v2/quota/usage", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +148,7 @@ type planResponse struct {
 }
 
 func fetchPaymentType(sa *storedAuth) string {
-	req, err := http.NewRequest(http.MethodGet, upstreamBaseCN+"/api/v2/user/plan", nil)
+	req, err := http.NewRequest(http.MethodGet, specFor(regionForAuth(sa)).OpenAPIBase+"/api/v2/user/plan", nil)
 	if err != nil {
 		return ""
 	}
@@ -165,7 +169,7 @@ func fetchPaymentType(sa *storedAuth) string {
 }
 
 func performCheckinCall(sa *storedAuth) (map[string]any, error) {
-	req, err := http.NewRequest(http.MethodPost, upstreamBaseCN+"/sash/api/v1/me/daily-check-in/claim", strings.NewReader("{}"))
+	req, err := http.NewRequest(http.MethodPost, specFor(RegionCN).OpenAPIBase+"/sash/api/v1/me/daily-check-in/claim", strings.NewReader("{}"))
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +185,7 @@ func performCheckinCall(sa *storedAuth) (map[string]any, error) {
 	if err := json.Unmarshal(resp.Body, &m); err != nil {
 		return nil, err
 	}
-	// QoderWork checkin claim returns {"success":true, "rewardCredits":100,...}
+	// Qoder checkin claim returns {"success":true, "rewardCredits":100,...}
 	// on success, or {"success":false,"error":"..."} on already-claimed.
 	// Normalise to the panel's expected shape (bool success).
 	if _, ok := m["success"]; !ok {

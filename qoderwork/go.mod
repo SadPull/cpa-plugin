@@ -1,4 +1,4 @@
-module github.com/Sliverkiss/cpa-plugin/qoderwork
+module github.com/SadPull/QoderGateway/cpa-plugin/qoder
 
 go 1.26.0
 

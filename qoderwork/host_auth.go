@@ -26,15 +26,15 @@ type rpcHostAuthGetResponse struct {
 	JSON      json.RawMessage `json:"json"`
 }
 
-// hostAuthList returns all qoderwork credentials known to the host.
+// hostAuthList returns all qoder credentials known to the host.
 //
 // Ownership is decided by CREDENTIAL CONTENT, not by the host's classification:
 // the host labels type-less files by whichever plugin's ParseAuth claims them
 // first, and that label has been observed to flip a workbuddy OAuth file to
-// qoderwork (both plugins share an identical nested {auth,account} shape, so
-// qoderwork's parseStored accepts a workbuddy token). Once the host relabels
-// it, a naive "qoderwork-" filename / Type==qoderwork filter would hand the
-// workbuddy credential to qoderwork's keepalive / reconcile / models list,
+// qoder (both plugins share an identical nested {auth,account} shape, so
+// qoder's parseStored accepts a workbuddy token). Once the host relabels
+// it, a naive "qoder-" filename / Type==qoder filter would hand the
+// workbuddy credential to qoder's keepalive / reconcile / models list,
 // which then call qoder.com.cn with a codebuddy.cn token — the reported bug.
 //
 // The list RPC does not return file bodies, so we classify cheaply first and
@@ -44,7 +44,7 @@ type rpcHostAuthGetResponse struct {
 //  2. Entry lacks a type → fetch raw JSON, re-check the file's own type, then
 //     fall back to auth.domain: qoder.com.cn/qoder.com → ours;
 //     codebuddy.cn/workbuddy.ai → theirs.
-//  3. Still inconclusive → legacy "qoderwork-" filename prefix.
+//  3. Still inconclusive → legacy "qoder-" filename prefix.
 func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
 	raw, err := hostCall(pluginabi.MethodHostAuthList, nil)
 	if err != nil {
@@ -70,7 +70,7 @@ func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
 	return out, nil
 }
 
-// hostAuthEntryOurs decides whether one host auth entry is a qoderwork
+// hostAuthEntryOurs decides whether one host auth entry is a qoder
 // credential. Type/provider on the entry is authoritative; otherwise we look
 // at the raw file content (type, then auth.domain) via one host.auth.get.
 //
@@ -84,7 +84,7 @@ func hostAuthEntryOurs(f *pluginapi.HostAuthFileEntry) bool {
 		declared = strings.ToLower(strings.TrimSpace(f.Provider))
 	}
 	if declared != "" {
-		// Host already classified it. Trust an explicit qoderwork label, and
+		// Host already classified it. Trust an explicit qoder label, and
 		// trust an explicit FOREIGN label too (don't second-guess "workbuddy").
 		return declared == providerName
 	}
@@ -178,14 +178,10 @@ func domainFromJSON(rawJSON json.RawMessage) string {
 	return strings.ToLower(strings.TrimSpace(probe.Domain))
 }
 
-// isQoderDomain reports whether a domain belongs to the QoderWork service.
+// isQoderDomain reports whether a domain belongs to either Qoder realm
+// (qoder.com.cn / qoder.com / qoder.sh).
 func isQoderDomain(domain string) bool {
-	d := strings.ToLower(strings.TrimSpace(domain))
-	if d == "" {
-		return false
-	}
-	return d == "qoder.com.cn" || d == "qoder.com" ||
-		strings.HasSuffix(d, ".qoder.com.cn") || strings.HasSuffix(d, ".qoder.com")
+	return isQoderRegionDomain(domain)
 }
 
 // hostAuthGet fetches the credential JSON for one auth index.

@@ -1,10 +1,10 @@
-// oauth.go implements QoderWork's auth flows. Two entry points, one outcome:
+// oauth.go implements Qoder's auth flows. Two entry points, one outcome:
 //
 //  1. PAT import (management panel): user pastes a PAT (`pt-...`) created on
 //     qoder.com.cn; the plugin exchanges it for a jobToken pair (jt-/jrt-)
 //     and stores both.
 //
-//  2. OAuth-like flow (AuthProvider.StartLogin): QoderWork has no real
+//  2. OAuth-like flow (AuthProvider.StartLogin): Qoder has no real
 //     OAuth authorization-code flow — its web login is Aliyun SSO SMS →
 //     web session cookie → manual PAT creation. So handleStartLogin returns
 //     the PAT-creation page URL; the user creates a PAT in their browser
@@ -74,9 +74,10 @@ func doRawJSON(client *http.Client, method, fullURL string, headers func(*http.R
 
 // exchangePATForJobToken calls POST /api/v1/jobToken/exchange with a PAT and
 // returns the resulting jt-/jrt- pair.
-func exchangePATForJobToken(pat string) (*jobTokenResponse, error) {
+func exchangePATForJobToken(pat, region string) (*jobTokenResponse, error) {
 	body, _ := json.Marshal(map[string]string{"personal_token": pat})
-	data, _, err := doRawJSON(sharedHTTPClient(), http.MethodPost, endpointJobTokenExchange, nil, bytes.NewReader(body))
+	fullURL := specFor(region).OpenAPIBase + "/api/v1/jobToken/exchange"
+	data, _, err := doRawJSON(sharedHTTPClient(), http.MethodPost, fullURL, nil, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -90,10 +91,32 @@ func exchangePATForJobToken(pat string) (*jobTokenResponse, error) {
 	return &out, nil
 }
 
+// exchangePATForJobTokenAny exchanges a PAT trying the preferred realm first,
+// then the other one. pt- tokens are realm-specific but visually identical, so
+// a mismatch between the pasted PAT's realm and the requested region must not
+// fail the import (e.g. a CN PAT pasted while default_region=global). Returns
+// the token pair plus the realm that actually accepted it.
+func exchangePATForJobTokenAny(pat, preferred string) (*jobTokenResponse, string, error) {
+	tok, err := exchangePATForJobToken(pat, preferred)
+	if err == nil {
+		return tok, normalizeRegion(preferred, defaultRegion()), nil
+	}
+	other := RegionCN
+	if normalizeRegion(preferred, defaultRegion()) == RegionCN {
+		other = RegionGlobal
+	}
+	tok2, err2 := exchangePATForJobToken(pat, other)
+	if err2 == nil {
+		return tok2, other, nil
+	}
+	return nil, "", err // surface the preferred realm's error
+}
+
 // refreshJobToken calls POST /api/v1/jobToken/refresh with a jrt-.
-func refreshJobToken(jrt string) (*jobTokenResponse, error) {
+func refreshJobToken(jrt, region string) (*jobTokenResponse, error) {
 	body, _ := json.Marshal(map[string]string{"refresh_token": jrt})
-	data, _, err := doRawJSON(sharedHTTPClient(), http.MethodPost, endpointJobTokenRefresh, nil, bytes.NewReader(body))
+	fullURL := specFor(region).OpenAPIBase + "/api/v1/jobToken/refresh"
+	data, _, err := doRawJSON(sharedHTTPClient(), http.MethodPost, fullURL, nil, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -124,8 +147,8 @@ type userInfoResponse struct {
 // fetchUserInfo queries /api/v1/userinfo with a jt- Bearer to populate the
 // auth's identity fields (uid, nickname, user_type for COSY signing).
 // The endpoint returns plain JSON (no envelope) — same as jobToken/exchange.
-func fetchUserInfo(jt string) (*userInfoResponse, error) {
-	req, err := http.NewRequest(http.MethodGet, endpointUserInfo, nil)
+func fetchUserInfo(jt, region string) (*userInfoResponse, error) {
+	req, err := http.NewRequest(http.MethodGet, specFor(region).OpenAPIBase+"/api/v1/userinfo", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +172,8 @@ func fetchUserInfo(jt string) (*userInfoResponse, error) {
 
 // buildStoredAuthFromJobToken constructs a storedAuth from a PAT + jobToken
 // pair + user identity. Called by both PAT import and OAuth-like poll.
-func buildStoredAuthFromJobToken(pat string, tok *jobTokenResponse, ui *userInfoResponse) *storedAuth {
+func buildStoredAuthFromJobToken(pat string, tok *jobTokenResponse, ui *userInfoResponse, region string) *storedAuth {
+	region = normalizeRegion(region, defaultRegion())
 	expiresAt := time.Now().Add(24 * time.Hour).Unix()
 	if tok.ExpiresIn > 0 {
 		expiresAt = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Millisecond).Unix()
@@ -163,7 +187,7 @@ func buildStoredAuthFromJobToken(pat string, tok *jobTokenResponse, ui *userInfo
 	}
 
 	// PersonalToken is stored inside RefreshToken only when refresh is via PAT
-	// (no jrt available). For QoderWork we have a real jrt- (refresh token),
+	// (no jrt available). For Qoder we have a real jrt- (refresh token),
 	// so RefreshToken carries the jrt- and the PAT itself is kept in Domain
 	// alongside the realm for later re-exchange when jrt- expires (48h).
 	return &storedAuth{
@@ -172,7 +196,8 @@ func buildStoredAuthFromJobToken(pat string, tok *jobTokenResponse, ui *userInfo
 			RefreshToken:  tok.RefreshToken,
 			PersonalToken: pat, // PAT stored for automatic re-exchange when jrt- expires (48h)
 			ExpiresAt:     expiresAt,
-			Domain:        "qoder.com.cn",
+			Domain:        regionDomain(region),
+			Region:        region,
 		},
 		Account: storedAccount{
 			UID:      uid,
@@ -191,10 +216,11 @@ func uiUserType(ui *userInfoResponse) string {
 // -----------------------------------------------------------------------------
 // Device-authorization login (real OAuth — no PAT required)
 //
-// Reverse-engineered from the official QoderWork CN desktop client
-// (/tmp/qw_extract .../main.js) and proven live against the Global realm by
-// /root/qoder-register/qoder_device_oauth.py (2026-07-22, issued dt-/drt-
-// tokens). CN realm constants from the same main.js:
+// PKCE device flow, reverse-engineered from the official desktop clients and
+// verified live on BOTH realms: CN (qoderwork, 2026-07-22) and global
+// (QoderGateway, 2026-08 - openapi.qoder.sh deviceToken/poll, client_id
+// e883ade2-... from the qoder CLI bundle). Per-realm website/client_id come
+// from region.go's specFor.
 //
 //	WEBSITE_DOMAIN  = qoder.com.cn        (auth pages)
 //	OPENAPI_DOMAIN  = openapi.qoder.com.cn (token endpoints)
@@ -207,12 +233,6 @@ func uiUserType(ui *userInfoResponse) string {
 // (404/202 = pending). Tokens: dt- (~30d) + drt- refresh (~1y), refreshed via
 // POST /api/v1/deviceToken/refresh — no PAT involved anywhere.
 // -----------------------------------------------------------------------------
-
-const (
-	qoderWebsiteCN   = "https://qoder.com.cn"
-	qoderClientID    = "1c5e33e1-364d-4ce6-b02c-acaa81274a5c"
-	qoderRedirectURI = "qoder-work-cn://"
-)
 
 // deviceTokenResponse mirrors /api/v1/deviceToken/{poll,refresh} payloads.
 // expires_in / refresh_token_expires_in are MILLISECONDS (client main.js and
@@ -257,6 +277,16 @@ func makePKCE() (string, string) {
 // handleStartLogin implements AuthProvider.StartLogin: build the device
 // authorization URL and stash the PKCE verifier under the returned state.
 func handleStartLogin(raw []byte) ([]byte, error) {
+	var req pluginapi.AuthLoginStartRequest
+	_ = json.Unmarshal(raw, &req)
+	region := defaultRegion()
+	if req.Metadata != nil {
+		if v, ok := req.Metadata["region"].(string); ok && strings.TrimSpace(v) != "" {
+			region = normalizeRegion(v, defaultRegion())
+		}
+	}
+	spec := specFor(region)
+
 	verifier, challenge := makePKCE()
 	nonce := uuid.NewString()
 	machineID := uuid.NewString()
@@ -266,13 +296,12 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 	q.Set("challenge_method", "S256")
 	q.Set("nonce", nonce)
 	q.Set("machine_id", machineID)
-	q.Set("client_id", qoderClientID)
-	q.Set("redirect_uri", qoderRedirectURI)
-	authURL := qoderWebsiteCN + "/device/selectAccounts?" + q.Encode()
+	q.Set("client_id", spec.ClientID)
+	authURL := spec.WebsiteBase + "/device/selectAccounts?" + q.Encode()
 
 	now := time.Now()
-	state := fmt.Sprintf("qw-%d", now.UnixNano())
-	loginStates.Store(state, &loginCtx{verifier: verifier, nonce: nonce, expires: now.Add(loginTTL), startedAt: now.UnixNano()})
+	state := fmt.Sprintf("qd-%s-%d", region, now.UnixNano())
+	loginStates.Store(state, &loginCtx{verifier: verifier, nonce: nonce, region: region, expires: now.Add(loginTTL), startedAt: now.UnixNano()})
 	return okEnvelope(pluginapi.AuthLoginStartResponse{
 		Provider:  providerName,
 		URL:       authURL,
@@ -280,7 +309,8 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 		ExpiresAt: now.Add(loginTTL).UTC(),
 		Metadata: map[string]any{
 			"logo":   pluginLogoURL,
-			"prompt": "在打开的页面中登录并授权 QoderWork（设备授权，无需 PAT）。完成后此窗口会自动关闭。",
+			"region": region,
+			"prompt": "在打开的页面中登录并授权 Qoder " + regionLabel(region) + "（设备授权，无需 PAT）。如需另一区域账号，请先在插件配置中调整 default_region。",
 		},
 	})
 }
@@ -288,19 +318,19 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 // pollDeviceToken performs one GET against /api/v1/deviceToken/poll.
 // Returns (tok, pending, error): pending=true means the user hasn't finished
 // authorizing yet (upstream 404/202) — the host should keep polling.
-func pollDeviceToken(nonce, verifier string) (*deviceTokenResponse, bool, error) {
+func pollDeviceToken(nonce, verifier, region string) (*deviceTokenResponse, bool, error) {
 	q := url.Values{}
 	q.Set("nonce", nonce)
 	q.Set("verifier", verifier)
 	q.Set("challenge_method", "S256")
-	fullURL := upstreamBaseCN + "/api/v1/deviceToken/poll?" + q.Encode()
+	fullURL := specFor(region).OpenAPIBase + "/api/v1/deviceToken/poll?" + q.Encode()
 
 	req, err := http.NewRequest(http.MethodGet, fullURL, nil)
 	if err != nil {
 		return nil, false, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "QoderWork")
+	req.Header.Set("User-Agent", "Qoder")
 	resp, err := sharedHTTPClient().Do(req)
 	if err != nil {
 		return nil, false, err
@@ -324,9 +354,10 @@ func pollDeviceToken(nonce, verifier string) (*deviceTokenResponse, bool, error)
 }
 
 // refreshDeviceToken calls POST /api/v1/deviceToken/refresh with a drt-.
-func refreshDeviceToken(drt string) (*deviceTokenResponse, error) {
+func refreshDeviceToken(drt, region string) (*deviceTokenResponse, error) {
 	body, _ := json.Marshal(map[string]string{"refresh_token": drt})
-	data, _, err := doRawJSON(sharedHTTPClient(), http.MethodPost, upstreamBaseCN+"/api/v1/deviceToken/refresh", nil, bytes.NewReader(body))
+	fullURL := specFor(region).OpenAPIBase + "/api/v1/deviceToken/refresh"
+	data, _, err := doRawJSON(sharedHTTPClient(), http.MethodPost, fullURL, nil, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -374,12 +405,18 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		if !strings.HasPrefix(pat, "pt-") {
 			return nil, fmt.Errorf("poll: PAT must start with pt-")
 		}
-		tok, err := exchangePATForJobToken(pat)
+		region := lc.region
+		if req.Metadata != nil {
+			if v, ok := req.Metadata["region"].(string); ok && strings.TrimSpace(v) != "" {
+				region = normalizeRegion(v, region)
+			}
+		}
+		tok, region, err := exchangePATForJobTokenAny(pat, region)
 		if err != nil {
 			return nil, fmt.Errorf("PAT exchange failed: %w", err)
 		}
-		ui, _ := fetchUserInfo(tok.Token)
-		sa := buildStoredAuthFromJobToken(pat, tok, ui)
+		ui, _ := fetchUserInfo(tok.Token, region)
+		sa := buildStoredAuthFromJobToken(pat, tok, ui, region)
 		loginStates.Delete(state)
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
 			Status: pluginapi.AuthLoginStatusSuccess,
@@ -389,7 +426,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 
 	// Device-authorization path: poll the grant. The verifier never left
 	// this process; the nonce pairs it to the auth URL we handed out.
-	tok, pending, err := pollDeviceToken(lc.nonce, lc.verifier)
+	tok, pending, err := pollDeviceToken(lc.nonce, lc.verifier, lc.region)
 	if err != nil {
 		return nil, fmt.Errorf("device authorization poll: %w", err)
 	}
@@ -399,7 +436,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		// blocking work (fetchUserInfo, hostAuthList) delays persistence.
 		// UserID is already in the poll response; nickname is fetched lazily
 		// by the panel on first load. PAT coalescing happens on keepalive.
-		sa := buildStoredAuthFromDeviceToken(tok, nil)
+		sa := buildStoredAuthFromDeviceToken(tok, nil, lc.region)
 		loginStates.Delete(state)
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
 			Status: pluginapi.AuthLoginStatusSuccess,
@@ -407,7 +444,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		})
 	}
 
-	// Panel-import path: a new qoderwork auth file appeared since StartLogin.
+	// Panel-import path: a new qoder auth file appeared since StartLogin.
 	files, err := hostAuthList()
 	if err == nil {
 		for _, f := range files {
@@ -426,7 +463,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 
 	return okEnvelope(pluginapi.AuthLoginPollResponse{
 		Status:  pluginapi.AuthLoginStatusPending,
-		Message: "等待浏览器完成 QoderWork 设备授权",
+		Message: "等待浏览器完成 Qoder 设备授权（" + regionLabel(lc.region) + "）",
 	})
 }
 
@@ -450,7 +487,8 @@ func deviceExpiryUnix(tok *deviceTokenResponse) int64 {
 // PollLogin), UserID comes from the poll response and nickname is empty —
 // the panel fills it lazily on first load. preservePAT=false skips the
 // hostAuthList scan to avoid blocking auth-file persistence.
-func buildStoredAuthFromDeviceToken(tok *deviceTokenResponse, ui *userInfoResponse) *storedAuth {
+func buildStoredAuthFromDeviceToken(tok *deviceTokenResponse, ui *userInfoResponse, region string) *storedAuth {
+	region = normalizeRegion(region, defaultRegion())
 	expiresAt := deviceExpiryUnix(tok)
 	uid := tok.UserID
 	nickname := ""
@@ -475,13 +513,22 @@ func buildStoredAuthFromDeviceToken(tok *deviceTokenResponse, ui *userInfoRespon
 			RefreshToken:  tok.RefreshToken,
 			PersonalToken: "", // PAT coalescing happens on keepalive, not here
 			ExpiresAt:     expiresAt,
-			Domain:        "qoder.com.cn",
+			Domain:        regionDomain(region),
+			Region:        region,
 		},
 		Account: storedAccount{UID: uid, Nickname: nickname},
 	}
 }
 
-// existingPATForUID looks up an existing qoderwork auth file for the same
+// regionLabel is a human-readable realm tag for prompts/notes.
+func regionLabel(region string) string {
+	if normalizeRegion(region, RegionGlobal) == RegionCN {
+		return "国内版"
+	}
+	return "国际版"
+}
+
+// existingPATForUID looks up an existing qoder auth file for the same
 // uid and returns its stored PAT (empty when none). Lets OAuth re-login
 // preserve a previously imported PAT instead of wiping it.
 //
@@ -535,9 +582,10 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("refresh: %w", err)
 	}
 
+	region := regionForAuth(sa)
 	if strings.HasPrefix(sa.Auth.RefreshToken, "drt-") {
 		// OAuth device family — deviceToken/refresh ONLY.
-		tok, err := refreshDeviceToken(sa.Auth.RefreshToken)
+		tok, err := refreshDeviceToken(sa.Auth.RefreshToken, region)
 		if err != nil {
 			return nil, fmt.Errorf("refresh rejected: %w — deviceToken refresh failed; re-login via OAuth required", err)
 		}
@@ -545,14 +593,14 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 		sa.Auth.RefreshToken = tok.RefreshToken
 		sa.Auth.ExpiresAt = preserveExpiry(deviceExpiryUnix(tok), sa.Auth.ExpiresAt)
 		invalidateCosySession(sa.Account.UID)
-		return okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa, refreshMetadataBase(req))})
+		return okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa)})
 	}
 
 	// Legacy PAT family: Tier 1 jrt- refresh → Tier 2 PAT re-exchange.
-	tok, err := refreshJobToken(sa.Auth.RefreshToken)
+	tok, err := refreshJobToken(sa.Auth.RefreshToken, region)
 	if err != nil && sa.Auth.PersonalToken != "" {
 		// Tier 2: jrt- expired — fall back to PAT re-exchange.
-		tok, err = exchangePATForJobToken(sa.Auth.PersonalToken)
+		tok, err = exchangePATForJobToken(sa.Auth.PersonalToken, region)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("refresh rejected: %w — both jrt- refresh and PAT re-exchange failed; re-import PAT required", err)
@@ -569,7 +617,7 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	// Host persists the refreshed credential itself after Refresh returns
 	// (conductor.go refreshAuth → m.Update → persist). Writing from the
 	// plugin too would double-write the file.
-	return okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa, refreshMetadataBase(req))})
+	return okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa)})
 }
 
 // preserveExpiry reuses the previous token's expiresAt when the refresh
@@ -582,71 +630,11 @@ func preserveExpiry(newExpiry, oldExpiry int64) int64 {
 	return oldExpiry
 }
 
-// refreshMetadataBase resolves the metadata base for the refresh persist.
-//
-// Priority: (1) the physical auth file's top-level fields — authoritative,
-// because the in-memory auth.Metadata is rebuilt from the plugin's parse
-// output on every watcher re-parse and therefore loses user fields like
-// excluded-models within seconds of the panel writing them; (2) fall back to
-// req.Metadata (the host-managed live metadata) when the file cannot be read.
-// Nested credential keys (auth/account) are stripped — they belong to
-// StorageJSON, not Metadata. Mirrors the workbuddy helper.
-func refreshMetadataBase(req pluginapi.AuthRefreshRequest) map[string]any {
-	var base map[string]any
-	if phys := physicalAuthByFileName(req.AuthID); phys != nil && len(phys.JSON) > 0 {
-		var doc map[string]any
-		if err := json.Unmarshal(phys.JSON, &doc); err == nil && doc != nil {
-			base = doc
-		}
-	}
-	if base == nil && len(req.Metadata) > 0 {
-		base = map[string]any{}
-		for k, v := range req.Metadata {
-			base[k] = v
-		}
-	}
-	if base == nil {
-		return nil
-	}
-	delete(base, "auth")
-	delete(base, "account")
-	return base
-}
-
-// physicalAuthByFileName maps an auth file name (auth.ID / AuthData.FileName,
-// the path relative to the auth dir) to the physical file via host.auth.list +
-// host.auth.get. Returns nil when the credential cannot be located. Used by
-// the refresh path (fall back to req.Metadata) and the import path (re-import
-// of an existing credential must not drop user-managed fields).
-// Mirrors the workbuddy helper.
-func physicalAuthByFileName(authID string) *hostAuthPhysical {
-	authID = strings.TrimSpace(authID)
-	if authID == "" {
-		return nil
-	}
-	files, err := hostAuthList()
-	if err != nil {
-		return nil
-	}
-	for _, f := range files {
-		if f.ID != authID {
-			continue
-		}
-		phys, err := hostAuthGetPhysical(f.AuthIndex)
-		if err == nil && phys != nil {
-			return phys
-		}
-	}
-	return nil
-}
-
 // toAuthDataForRefresh mirrors the workbuddy helper: blank out FileName and
 // ID so the host backfills from the original auth path (prevents ID mismatch
-// duplicate files when Refresh round-trips the record). existingMeta is the
-// live host-managed metadata, merged so user-set top-level fields survive the
-// host's post-refresh persist.
-func toAuthDataForRefresh(sa *storedAuth, existingMeta map[string]any) pluginapi.AuthData {
-	ad := toAuthDataOptsMeta(sa, nil, false, existingMeta)
+// duplicate files when Refresh round-trips the record).
+func toAuthDataForRefresh(sa *storedAuth) pluginapi.AuthData {
+	ad := toAuthDataOpts(sa, nil, false)
 	ad.FileName = "" // let host backfill original
 	ad.ID = ""       // let host compute from path (prevents ID mismatch dupes)
 	return ad

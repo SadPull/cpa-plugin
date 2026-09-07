@@ -1,4 +1,4 @@
-// keepalive.go implements proactive daily token refresh for qoderwork auths.
+// keepalive.go implements proactive daily token refresh for qoder auths.
 //
 // Motivation: upstream (openapi.qoder.com.cn) issues jobTokens (24h) and
 // refreshTokens (48h). When they expire mid-flight, every billing and
@@ -8,7 +8,7 @@
 //   - Runs on the existing schedulerLoop at 22:00 local (keepaliveHours is
 //     separate from checkinHours so the two cadences can evolve independently).
 //     separate from checkinHours so the two cadences can evolve independently).
-//   - Iterates all qoderwork auths via host.auth.list/get, calls
+//   - Iterates all qoder auths via host.auth.list/get, calls
 //     {realm-base}/v2/plugin/auth/token/refresh with X-Refresh-Token via
 //     the host HTTP bridge (host.http.do).
 //   - On success the auth file is persisted via host.auth.save (host watcher
@@ -48,7 +48,7 @@ func keepaliveEnabled() bool {
 }
 
 // sessionDeadMarkers identify a server-side revoked / expired token.
-// QoderWork returns TOKEN_EXPIRE when jt- or jrt- is no longer valid.
+// Qoder returns TOKEN_EXPIRE when jt- or jrt- is no longer valid.
 var sessionDeadMarkers = []string{
 	"TOKEN_EXPIRE",
 	"12153",
@@ -75,12 +75,13 @@ func isSessionDeadError(msg string) bool {
 // classification — doRawJSON collapses 4xx bodies into a generic error and
 // drops the business code, e.g. TOKEN_EXPIRE).
 func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
+	openAPIBase := specFor(regionForAuth(sa)).OpenAPIBase
 	// Device family (drt-): use the device flow's own refresh endpoint.
 	// Routing is by token prefix, not PersonalToken presence — a PAT may
 	// coexist as fallback and must not hijack OAuth refreshes.
 	if strings.HasPrefix(sa.Auth.RefreshToken, "drt-") {
 		body, _ := json.Marshal(map[string]string{"refresh_token": sa.Auth.RefreshToken})
-		data, status, err := doRawJSON(sharedHTTPClient(), http.MethodPost, upstreamBaseCN+"/api/v1/deviceToken/refresh", nil, bytes.NewReader(body))
+		data, status, err := doRawJSON(sharedHTTPClient(), http.MethodPost, openAPIBase+"/api/v1/deviceToken/refresh", nil, bytes.NewReader(body))
 		if err == nil {
 			return data, data, status, nil
 		}
@@ -88,14 +89,14 @@ func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
 	}
 	// Legacy PAT family: try jrt- refresh first.
 	body, _ := json.Marshal(map[string]string{"refresh_token": sa.Auth.RefreshToken})
-	data, status, err := doRawJSON(sharedHTTPClient(), http.MethodPost, endpointJobTokenRefresh, nil, bytes.NewReader(body))
+	data, status, err := doRawJSON(sharedHTTPClient(), http.MethodPost, openAPIBase+"/api/v1/jobToken/refresh", nil, bytes.NewReader(body))
 	if err == nil {
 		return data, data, status, nil
 	}
 	// Fallback: PAT re-exchange (only when a PAT is actually present).
 	if sa.Auth.PersonalToken != "" {
 		patBody, _ := json.Marshal(map[string]string{"personal_token": sa.Auth.PersonalToken})
-		data2, status2, err2 := doRawJSON(sharedHTTPClient(), http.MethodPost, endpointJobTokenExchange, nil, bytes.NewReader(patBody))
+		data2, status2, err2 := doRawJSON(sharedHTTPClient(), http.MethodPost, openAPIBase+"/api/v1/jobToken/exchange", nil, bytes.NewReader(patBody))
 		if err2 == nil {
 			return data2, data2, status2, nil
 		}
@@ -103,7 +104,7 @@ func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
 	return nil, nil, status, err
 }
 
-// refreshOneAuth refreshes the access token for a single qoderwork auth and
+// refreshOneAuth refreshes the access token for a single qoder auth and
 // persists the result. Returns a short status string for logging/tests.
 func refreshOneAuth(authIndex, authID string) (string, error) {
 	sa, err := hostAuthGet(authIndex)
@@ -164,14 +165,11 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 // The host's file watcher reloads it; we deliberately do NOT dual-write the
 // physical path (same rule as hostAuthPersist).
 //
-// MUST go through buildAuthFileJSONPreserve with the CURRENT physical file as
-// base — a bare json.Marshal(sa) would drop type/provider/logo/disabled/note,
-// resurrecting accounts that lifecycle disabled (P0: a 22:00 keepalive refresh
-// used to wipe disabled:true and put the account back into rotation), and a
-// fixed-shape rebuild would additionally drop user-managed top-level fields
-// (excluded-models / prefix / proxy_url / priority / headers). The preserve
-// variant keeps every unknown key while refreshing the tokens + the note
-// carried over from disk.
+// MUST go through buildAuthFileJSON with the CURRENT top-level fields from
+// the physical file — a bare json.Marshal(sa) would drop type/provider/logo/
+// disabled/note, resurrecting accounts that lifecycle disabled (P0: a 22:00
+// keepalive refresh used to wipe disabled:true and put the account back into
+// rotation).
 func persistAuthTokens(authIndex string, sa *storedAuth) error {
 	phys, err := hostAuthGetPhysical(authIndex)
 	if err != nil {
@@ -190,7 +188,7 @@ func persistAuthTokens(authIndex string, sa *storedAuth) error {
 			note = s
 		}
 	}
-	raw, err := buildAuthFileJSONPreserve(phys.JSON, sa, phys.Disabled, note, nil)
+	raw, err := buildAuthFileJSON(sa, phys.Disabled, note, nil)
 	if err != nil {
 		return err
 	}
@@ -258,7 +256,7 @@ func getLastKeepalive() *keepaliveSummary {
 	return lastKeepalive
 }
 
-// runTokenKeepalive refreshes every qoderwork auth once. Returns the summary.
+// runTokenKeepalive refreshes every qoder auth once. Returns the summary.
 func runTokenKeepalive() *keepaliveSummary {
 	sum := &keepaliveSummary{When: time.Now()}
 	if !keepaliveEnabled() {
@@ -285,7 +283,7 @@ func runTokenKeepalive() *keepaliveSummary {
 			// but the row should be populated even when refresh errors early.
 			if sa, err := hostAuthGet(f.AuthIndex); err == nil {
 				row.Nickname = sa.Account.Nickname
-				row.Region = "cn"
+				row.Region = regionForAuth(sa)
 			}
 			status, err := refreshOneAuth(f.AuthIndex, f.ID)
 			row.Status = status
@@ -333,7 +331,7 @@ func handleKeepaliveNow(req pluginapi.ManagementRequest) map[string]any {
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	row := keepaliveRow{AuthIndex: authIndex, Nickname: sa.Account.Nickname, Region: "cn"}
+	row := keepaliveRow{AuthIndex: authIndex, Nickname: sa.Account.Nickname, Region: regionForAuth(sa)}
 	row.Status, err = refreshOneAuth(authIndex, "")
 	if err != nil {
 		row.Detail = truncateRedacted(err.Error(), 200)

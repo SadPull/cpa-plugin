@@ -1,9 +1,11 @@
-// Package main implements the qoderwork CLIProxyAPI dynamic plugin.
+// Package main implements the qoder CLIProxyAPI dynamic plugin.
 //
-// qoderwork wraps the QoderWork CN (qoder.com.cn) OpenAPI as a cliproxy
-// provider: it exchanges a PAT for a jobToken, refreshes it, signs inference
-// requests with COSY, and exposes the standard chat-completions interface.
-// upstream /v2/chat/completions endpoint.
+// qoder wraps both Qoder realms (international qoder.sh + CN qoder.com.cn)
+// as a cliproxy provider: it exchanges a PAT for a jobToken, runs the PKCE
+// device-authorization flow, refreshes tokens, and exposes the standard
+// chat-completions interface. Inference routes by account region — global
+// accounts use the OpenAI-native api2-v2 endpoint (pure Bearer, no COSY),
+// CN accounts use the COSY-signed gateway (see region.go).
 //
 // This file is a clean-room reimplementation reconstructed from the public
 // qoderwork.so binary (symbol table, string constants and RPC shape) published
@@ -44,10 +46,10 @@ typedef struct {
 
 // Wrappers so Go can invoke the host function-pointer table via cgo. The host
 // API captured at init is used to push streaming chunks back asynchronously.
-static int wb_call_host(cliproxy_host_api* api, const char* method, const uint8_t* request, size_t request_len, cliproxy_buffer* response) {
+static int qd_call_host(cliproxy_host_api* api, const char* method, const uint8_t* request, size_t request_len, cliproxy_buffer* response) {
 	return api->call(api->host_ctx, method, request, request_len, response);
 }
-static void wb_free_host_buffer(cliproxy_host_api* api, void* ptr, size_t len) {
+static void qd_free_host_buffer(cliproxy_host_api* api, void* ptr, size_t len) {
 	api->free_buffer(ptr, len);
 }
 
@@ -58,59 +60,38 @@ extern void cliproxyPluginShutdown(void);
 import "C"
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 const (
-	providerName  = "qoderwork"
-	authFileName  = "qoderwork.json"
+	providerName  = "qoder"
+	authFileName  = "qoder.json"
 	pluginLogoURL = "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/QoderWork.png"
-	// QoderWork CN: OpenAPI for auth/billing, gateway for COSY-signed inference.
-	// See /root/qoderwork/KNOWLEDGE.md §1-§5.
-	upstreamBaseCN = "https://openapi.qoder.com.cn"
-	gatewayBaseCN  = "https://gateway.qoder.com.cn"
-	clientUA       = "Go-http-client/2.0"
-
-	// Auth endpoints (PAT → jobToken exchange + refresh).
-	endpointJobTokenExchange = upstreamBaseCN + "/api/v1/jobToken/exchange"
-	endpointJobTokenRefresh  = upstreamBaseCN + "/api/v1/jobToken/refresh"
-
-	// Business endpoints (jt- Bearer, no COSY).
-	endpointUserInfo      = upstreamBaseCN + "/api/v1/userinfo"
-	endpointQuotaUsage    = upstreamBaseCN + "/api/v2/quota/usage"
-	endpointUserPlan      = upstreamBaseCN + "/api/v2/user/plan"
-	endpointCheckinStatus = upstreamBaseCN + "/sash/api/v1/me/daily-check-in/status"
-	endpointCheckinClaim  = upstreamBaseCN + "/sash/api/v1/me/daily-check-in/claim"
-	endpointProUpgrade    = upstreamBaseCN + "/sash/api/v1/me/pro-upgrade/claim"
-
-	// Inference endpoints (COSY-signed + QoderEncoding body).
-	endpointChat   = gatewayBaseCN + "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
-	endpointModels = gatewayBaseCN + "/algo/api/v2/model/list?Encode=1"
+	// User-Agent the upstreams expect for Bearer-style business endpoints.
+	clientUA = "Go-http-client/2.0"
 
 	// loginTTL bounds one device-authorization flow. Users may need to log in
 	// to qoder.com.cn first (Aliyun SSO) before authorizing — give them room.
 	loginTTL = 10 * time.Minute
 )
 
-// loginCtx holds one in-flight device-authorization login flow. QoderWork's
+// loginCtx holds one in-flight device-authorization login flow. Qoder's
 // desktop clients use a PKCE device flow: the plugin generates
 // verifier/challenge + nonce/machine_id, the user authorizes in a browser,
 // and PollLogin exchanges the grant at /api/v1/deviceToken/poll.
 type loginCtx struct {
 	verifier  string // PKCE code_verifier — required by the poll endpoint
 	nonce     string // device-flow nonce — paired with the auth URL
+	region    string // realm the login targets (global | cn)
 	expires   time.Time
 	startedAt int64 // unix nano, set when StartLogin creates the state
 }
@@ -224,13 +205,13 @@ func hostCall(method string, request []byte) ([]byte, error) {
 		reqLen = C.size_t(len(request))
 	}
 	var resp C.cliproxy_buffer
-	rc := C.wb_call_host(hostAPI, cMethod, (*C.uint8_t)(cReq), reqLen, &resp)
+	rc := C.qd_call_host(hostAPI, cMethod, (*C.uint8_t)(cReq), reqLen, &resp)
 	var out []byte
 	if resp.ptr != nil && resp.len > 0 {
 		out = C.GoBytes(resp.ptr, C.int(resp.len))
 	}
 	if resp.ptr != nil && hostAPI.free_buffer != nil {
-		C.wb_free_host_buffer(hostAPI, resp.ptr, resp.len)
+		C.qd_free_host_buffer(hostAPI, resp.ptr, resp.len)
 	}
 	if rc != 0 {
 		return out, fmt.Errorf("host call %s returned %d", method, int(rc))
@@ -244,7 +225,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
 		configure(request)
-		return okEnvelope(wbRegistration())
+		return okEnvelope(qdRegistration())
 	case pluginabi.MethodModelStatic:
 		return handleModelStatic(request)
 	case pluginabi.MethodModelForAuth:
@@ -266,7 +247,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	case pluginabi.MethodExecutorExecuteStream:
 		return handleExecStream(request)
 	case pluginabi.MethodExecutorCountTokens:
-		// Upstream QoderWork has no dedicated count_tokens API. Return
+		// Upstream Qoder has no dedicated count_tokens API. Return
 		// unhandled-style zero estimate so clients fall back / skip.
 		return okEnvelope(pluginapi.ExecutorResponse{Payload: []byte(`{"input_tokens":0}`)})
 	case pluginabi.MethodManagementRegister:
@@ -334,23 +315,25 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-// The default mirrors VERSION so a build without ldflags reports the right
-// version to the host plugin registry.
-var version = "0.4.2"
+var version = "0.1.0"
 
-func wbRegistration() registration {
+func qdRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             providerName,
 			Version:          version,
-			Author:           "Sliverkiss (based on qoderwork by lovingfish)",
-			GitHubRepository: "https://github.com/Sliverkiss/cpa-plugin",
+			Author:           "SadPull (based on qoderwork by Sliverkiss)",
+			GitHubRepository: "https://github.com/SadPull/QoderGateway",
 			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 09:00 and 21:00 local time for CN accounts (default true)."},
-				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Auto disable CN when credits exhausted; re-enable CN after check-in restores credits (default true)."},
-				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily access-token refresh at 22:00 local time to prevent Keycloak offline-session expiry (default true)."},
+				{Name: "default_region", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{RegionGlobal, RegionCN}, Description: "Default realm for new logins/imports and region-less auth files: global (qoder.sh, OpenAI-native inference, default) or cn (qoder.com.cn, COSY-signed gateway)."},
+				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 09:00 and 21:00 local time for CN accounts (default true; global accounts have no check-in)."},
+				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Auto disable accounts when quota/credits exhausted; re-enable after check-in restores credits (default true)."},
+				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily access-token refresh at 22:00 local time to prevent token expiry (default true)."},
+				{Name: "models_refresh", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Poll the upstream model catalog in the background so newly released or retired models are tracked without a restart (default true)."},
+				{Name: "models_refresh_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Model catalog refresh interval in minutes (default 10, minimum 1)."},
+				{Name: "models_refresh_push", Type: pluginapi.ConfigFieldTypeBoolean, Description: "On catalog change, stamp each enabled account file (models_synced_at) via host.auth.save to fire CPA's watcher and re-register models immediately (default true)."},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional model list. Each item can have id, name, alias, context, max_tokens, enabled, reasoning."},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick highest remaining). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
@@ -378,10 +361,20 @@ func wbRegistration() registration {
 // upstream call per account.
 const dynamicModelsCacheTTL = 5 * time.Minute
 
+// dynamicModelsEntry is one realm's cached model list.
+type dynamicModelsEntry struct {
+	list      []pluginapi.ModelInfo
+	slugToKey map[string]string // slug(display_name) -> upstream key
+	fetched   time.Time
+}
+
 var dynamicModelsCache struct {
 	sync.RWMutex
-	models  []pluginapi.ModelInfo
-	fetched time.Time
+	models map[string]dynamicModelsEntry // region -> entry
+}
+
+func init() {
+	dynamicModelsCache.models = map[string]dynamicModelsEntry{}
 }
 
 //
@@ -449,7 +442,7 @@ func hostAuthGetByIndex(authIndex string) ([]byte, error) {
 	return resp.JSON, nil
 }
 
-// storedAuth is the on-disk shape of a qoderwork credential.
+// storedAuth is the on-disk shape of a qoder credential.
 type storedAuth struct {
 	Auth    storedTokens  `json:"auth"`
 	Account storedAccount `json:"account"`
@@ -464,11 +457,13 @@ type storedAuth struct {
 // personalToken (pt-) is family-independent and never overwritten by refreshes
 // — it re-exchanges a fresh jobToken pair when both live tokens die.
 type storedTokens struct {
-	AccessToken   string `json:"accessToken"`   // jt- (24h) or dt- (~30d)
-	RefreshToken  string `json:"refreshToken"`  // jrt- (48h) or drt- (~1y)
-	PersonalToken string `json:"personalToken"` // pt-..., long-lived fallback
-	ExpiresAt     int64  `json:"expiresAt"`     // active-token expiry (unix seconds)
-	Domain        string `json:"domain"`        // realm: qoder.com.cn
+	AccessToken    string `json:"accessToken"`                // jt- (24h) or dt- (~30d)
+	RefreshToken   string `json:"refreshToken"`              // jrt- (48h) or drt- (~1y)
+	PersonalToken  string `json:"personalToken"`             // pt-..., long-lived fallback
+	ExpiresAt      int64  `json:"expiresAt"`                 // active-token expiry (unix seconds)
+	Domain         string `json:"domain"`                    // realm: qoder.com.cn (cn) / qoder.sh (global)
+	Region         string `json:"region,omitempty"`          // explicit realm: global | cn (overrides Domain)
+	ModelsSyncedAt string `json:"models_synced_at,omitempty"` // models_refresh.go push stamp; a real field so the host's parsed-auth diff sees it
 }
 
 type storedAccount struct {
@@ -477,7 +472,7 @@ type storedAccount struct {
 	Nickname     string `json:"nickname"`
 }
 
-// apiEnvelope is the generic {code,msg,data} wrapper used by every QoderWork API.
+// apiEnvelope is the generic {code,msg,data} wrapper used by every Qoder API.
 type apiEnvelope struct {
 	Code int             `json:"code"`
 	Msg  string          `json:"msg"`
@@ -486,7 +481,7 @@ type apiEnvelope struct {
 
 // jobTokenResponse is defined in oauth.go; keepalive and handleRefreshAuth
 // both use it. The old tokenData struct (camelCase tags) was wrong and has
-// been removed — QoderWork returns snake_case JSON.
+// been removed — Qoder returns snake_case JSON.
 
 func parseStored(raw []byte) (*storedAuth, error) {
 	if len(raw) == 0 {
@@ -494,7 +489,7 @@ func parseStored(raw []byte) (*storedAuth, error) {
 	}
 	// Accept both shapes seen in the wild:
 	//   nested: {"auth":{"accessToken":...},"account":{"uid":...}} (plugin/oauth output)
-	//   flat:   {"accessToken":...,"uid":...,"nickname":...} (CPA-Manager-Plus auths/qoderwork.json)
+	//   flat:   {"accessToken":...,"uid":...,"nickname":...} (CPA-Manager-Plus auths/qoder.json)
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -511,6 +506,7 @@ func parseStored(raw []byte) (*storedAuth, error) {
 			PersonalToken string `json:"personalToken"` // PAT fallback — must survive the flat shape too
 			ExpiresAt     int64  `json:"expiresAt"`
 			Domain        string `json:"domain"`
+			Region        string `json:"region"`
 			UID           string `json:"uid"`
 			EnterpriseID  string `json:"enterpriseId"`
 			Nickname      string `json:"nickname"`
@@ -518,11 +514,19 @@ func parseStored(raw []byte) (*storedAuth, error) {
 		if err := json.Unmarshal(raw, &flat); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
 		}
-		sa.Auth = storedTokens{AccessToken: flat.AccessToken, RefreshToken: flat.RefreshToken, PersonalToken: flat.PersonalToken, ExpiresAt: flat.ExpiresAt, Domain: flat.Domain}
+		sa.Auth = storedTokens{AccessToken: flat.AccessToken, RefreshToken: flat.RefreshToken, PersonalToken: flat.PersonalToken, ExpiresAt: flat.ExpiresAt, Domain: flat.Domain, Region: flat.Region}
 		sa.Account = storedAccount{UID: flat.UID, EnterpriseID: flat.EnterpriseID, Nickname: flat.Nickname}
 	}
 	if sa.Auth.AccessToken == "" {
 		return nil, fmt.Errorf("parse_error: missing accessToken")
+	}
+	// Normalize the realm: Region wins, Domain is the legacy carrier. An empty
+	// Region inherits the plugin default via regionForAuth (not stamped here —
+	// parseStored must not mutate identity for files that predate the field).
+	if sa.Auth.Region == "" && sa.Auth.Domain != "" {
+		if r := normalizeRegion(sa.Auth.Domain, ""); r != "" {
+			sa.Auth.Region = r
+		}
 	}
 	return &sa, nil
 }
@@ -589,7 +593,7 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 	}
 	if declared == "" {
 		// No type declared: only claim when the host already routed this to us
-		// (req.Provider == qoderwork) or the filename carries our prefix.
+		// (req.Provider == qoder) or the filename carries our prefix.
 		routed := strings.EqualFold(strings.TrimSpace(req.Provider), providerName)
 		prefixed := strings.HasPrefix(strings.ToLower(strings.TrimSpace(req.FileName)), providerName+"-")
 		if !routed && !prefixed {
@@ -597,17 +601,17 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 		}
 		// Even when routed/prefixed, a type-less file must not be provably
 		// foreign: both plugins share the nested {auth,account} shape, so a
-		// workbuddy OAuth credential parses cleanly as qoderwork. If the file
+		// workbuddy OAuth credential parses cleanly as qoder. If the file
 		// carries a domain, only claim qoder domains — a codebuddy.cn /
 		// workbuddy.ai domain means this is workbuddy's file (the bug where a
-		// workbuddy OAuth auth got reclassified as qoderwork after a refresh).
+		// workbuddy OAuth auth got reclassified as qoder after a refresh).
 		if d := domainFromJSON(req.RawJSON); d != "" && !isQoderDomain(d) {
 			return okEnvelope(pluginapi.AuthParseResponse{Handled: false})
 		}
 	}
 	sa, err := parseStored(req.RawJSON)
 	if err != nil {
-		// Not a qoderwork credential; let the host try other providers.
+		// Not a qoder credential; let the host try other providers.
 		return okEnvelope(pluginapi.AuthParseResponse{Handled: false})
 	}
 	// CRITICAL: echo back the host-provided FileName AND leave ID empty.
@@ -620,17 +624,7 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 	// By leaving ID empty, CPA falls back to authIDForPath(path) which
 	// derives ID from the file path → always matches the watcher's key.
 	// FileName is also echoed back to avoid rename-based duplicates.
-	//
-	// Metadata base = the file's own top-level fields. The host persists an
-	// auth as mergedStorageJSON(StorageJSON, Metadata), so returning only our
-	// 5 keys here would make every watcher re-parse rewrite the file without
-	// the user's excluded-models / prefix / proxy_url / priority / headers —
-	// silently undoing a panel model-disable within the same second. disabled
-	// is likewise read from the file so a re-parse never resurrects an account
-	// the lifecycle disabled.
-	existing := userFieldsFromAuthJSON(req.RawJSON)
-	disabled := parseDisabledFromAuthJSON(req.RawJSON)
-	ad := toAuthDataOptsMeta(sa, nil, disabled, existing)
+	ad := toAuthDataOpts(sa, nil, false)
 	ad.ID = "" // let host compute from path (prevents ID mismatch dupes)
 	if fn := strings.TrimSpace(req.FileName); fn != "" {
 		ad.FileName = fn
@@ -647,24 +641,26 @@ func toAuthData(sa *storedAuth) pluginapi.AuthData {
 
 // toAuthDataOpts builds AuthData with optional credits snapshot and disabled flag.
 func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi.AuthData {
-	return toAuthDataOptsMeta(sa, cr, disabled, nil)
-}
-
-// toAuthDataOptsMeta is toAuthDataOpts with an explicit metadata base. The
-// refresh path passes the live host-managed metadata (AuthRefreshRequest.
-// Metadata) so user-set fields survive the rewrite; parse/login pass nil.
-func toAuthDataOptsMeta(sa *storedAuth, cr *creditsSummary, disabled bool, existingMeta map[string]any) pluginapi.AuthData {
 	storage, _ := json.Marshal(sa)
 	id := providerName
 	fileName := authFileName
 	if sa != nil {
 		if uid := sanitizeUIDForFileName(sa.Account.UID); uid != "" {
 			id = uid
-			fileName = "qoderwork-" + uid + ".json"
+			fileName = "qoder-" + uid + ".json"
 		}
 	}
 	label := labelForAuth(sa)
-	meta := enrichAuthMetadata(sa, cr, disabled, existingMeta)
+	meta := enrichAuthMetadata(sa, cr, disabled)
+	// Surface the models_refresh push stamp as a routing attribute: the host
+	// only dispatches a Modify (and re-registers models) when the PARSED auth
+	// differs (authEqual on coreauth.Auth). The stamp must therefore appear
+	// here — StorageJSON alone is not guaranteed to be diffed field-by-field
+	// by every host path.
+	var attributes map[string]string
+	if sa != nil && strings.TrimSpace(sa.Auth.ModelsSyncedAt) != "" {
+		attributes = map[string]string{"models_synced_at": sa.Auth.ModelsSyncedAt}
+	}
 	return pluginapi.AuthData{
 		Provider:    providerName,
 		ID:          id,
@@ -674,7 +670,8 @@ func toAuthDataOptsMeta(sa *storedAuth, cr *creditsSummary, disabled bool, exist
 		StorageJSON: storage,
 		// Standardized auth metadata. `type` is required by the host for
 		// auth-file classification; `logo`/`note`/`disabled` surface on auth rows.
-		Metadata: meta,
+		Metadata:   meta,
+		Attributes: attributes,
 	}
 }
 
@@ -689,59 +686,10 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Map CPA-facing model name (e.g. "qoder/qmodel_preview" or "qmodel_preview")
-	// to the upstream key the gateway recognises.
-	upstreamModel := cpaToUpstreamKey(stripProviderPrefix(req.Model))
-	started := time.Now()
-	authUID := ""
-	if sa.Account.UID != "" {
-		authUID = sa.Account.UID
+	if regionForAuth(sa) == RegionGlobal {
+		return execExecuteGlobal(req, sa)
 	}
-	// Build the QoderWork agent_chat_generation body from the OpenAI request,
-	// then QoderEncoding-encode it. The template embeds a 10657-token system
-	// prompt that the server requires for normal behaviour (KNOWLEDGE §5.2).
-	qwReq := &openAIRequest{}
-	if err := json.Unmarshal(req.Payload, qwReq); err != nil && len(req.Payload) > 0 {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error())
-		return nil, fmt.Errorf("payload parse: %w", err)
-	}
-	body, err := buildQoderBody(qwReq, upstreamModel, uiUserType(nil))
-	if err != nil {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "body build: "+err.Error())
-		return nil, fmt.Errorf("body build: %w", err)
-	}
-	encodedBody := qoderEncode(body)
-	httpReq, err := http.NewRequest(http.MethodPost, endpointChat, strings.NewReader(encodedBody))
-	if err != nil {
-		return nil, err
-	}
-	if err := applyCosyHeaders(httpReq, sa, encodedBody, endpointChat, upstreamModel, true); err != nil {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "cosy: "+err.Error())
-		return nil, fmt.Errorf("cosy: %w", err)
-	}
-	// Compliance: route via host.http.do_stream so request-log captures the
-	// outbound call. Read entire body via the bridge, then fold SSE → completion.
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
-	if err != nil {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
-		return nil, fmt.Errorf("http_error: %w", err)
-	}
-	defer stream.Close()
-	reader := newHostStreamReader(stream)
-	if statusCode >= 400 {
-		payload, _ := io.ReadAll(reader)
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(payload))
-		reconcileAfterExecutorError(req.AuthID, statusCode, string(payload))
-		return nil, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200))
-	}
-	completion, err := aggregateQoderSSE(reader, req.Model)
-	if err != nil {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
-		return nil, err
-	}
-	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "")
-	invalidateAccountCredits(req.AuthID, authUID)
-	return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
+	return execExecuteCN(req, sa)
 }
 
 // stripProviderPrefix removes the leading "qoder/" (or any "<provider>/")
@@ -770,67 +718,10 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	upstreamModel := cpaToUpstreamKey(stripProviderPrefix(req.Model))
-	started := time.Now()
-	authUID := ""
-	if sa.Account.UID != "" {
-		authUID = sa.Account.UID
+	if regionForAuth(sa) == RegionGlobal {
+		return execStreamGlobal(req, sa)
 	}
-
-	// Build the QoderWork body (template-based) and QoderEncoding-encode.
-	bodyRaw := req.Payload
-	if len(bodyRaw) == 0 {
-		bodyRaw = req.OriginalRequest
-	}
-	qwReq := &openAIRequest{}
-	if err := json.Unmarshal(bodyRaw, qwReq); err != nil && len(bodyRaw) > 0 {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "payload parse: "+err.Error())
-		return nil, fmt.Errorf("payload parse: %w", err)
-	}
-	body, err := buildQoderBody(qwReq, upstreamModel, uiUserType(nil))
-	if err != nil {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "body build: "+err.Error())
-		return nil, fmt.Errorf("body build: %w", err)
-	}
-	encodedBody := qoderEncode(body)
-
-	headers := streamHeaders()
-	sseFramed := clientNeedsSSEFrame(req.Metadata)
-
-	// No async stream id → fall back to synchronous chunk collection.
-	if req.StreamID == "" {
-		collector := &sseUsageCollector{}
-		chunks, statusCode, errCollect := collectUpstreamStreamQoder(encodedBody, sa, upstreamModel, sseFramed, collector)
-		if errCollect != nil {
-			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error())
-			return nil, errCollect
-		}
-		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "")
-		invalidateAccountCredits(req.AuthID, authUID)
-		return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
-	}
-
-	// Async: return immediately with empty chunks. A goroutine pumps the upstream
-	// and emits each chunk via host.stream.emit so the client sees true streaming.
-	// Use context.Background() (not nil) so the request can be cancelled when the
-	// client disconnects — otherwise the pump keeps reading a dead upstream until
-	// sharedHTTPClient's 120s timeout, holding a pool slot the whole time.
-	ctx, cancel := context.WithCancel(context.Background())
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointChat, strings.NewReader(encodedBody))
-	if err != nil {
-		cancel()
-		streamEmitError(req.StreamID, err.Error())
-		streamClose(req.StreamID)
-		return okEnvelope(streamResponse{Headers: headers})
-	}
-	if err := applyCosyHeaders(httpReq, sa, encodedBody, endpointChat, upstreamModel, true); err != nil {
-		cancel()
-		streamEmitError(req.StreamID, "cosy: "+err.Error())
-		streamClose(req.StreamID)
-		return okEnvelope(streamResponse{Headers: headers})
-	}
-	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID)
-	return okEnvelope(streamResponse{Headers: headers})
+	return execStreamCN(req, sa)
 }
 
 // -----------------------------------------------------------------------------

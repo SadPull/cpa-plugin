@@ -64,17 +64,24 @@ func streamHeaders() http.Header {
 	return h
 }
 
+// sseUnwrapFunc turns one raw SSE "data:" payload into the OpenAI chunk the
+// host should see. ok=false skips the line; done=true terminates the stream
+// (the [DONE] sentinel). The CN gateway hands over double-nested frames
+// ({"body":"<json-string>"}, see unwrapCNBody); the global endpoint emits
+// standard OpenAI chunks (unwrapOpenAIChunk).
+type sseUnwrapFunc func(payload []byte) (inner string, ok bool, done bool)
+
 // pumpUpstreamStream reads the upstream SSE response in the background and
 // emits each cleaned chunk to the host stream. It closes the stream when done.
 // An emit failure (client disconnected → host closed the stream) aborts the
 // pump so we stop reading a dead upstream. cancel is invoked on every exit so
 // the underlying http request context is released promptly.
 //
-// v0.7.0: requests now route via host.http.do_stream so request-log captures
-// the outbound call and host transport policy applies. The host bridge emits
-// arbitrary 32KB chunks, so we adapt to io.Reader and keep the bufio.Scanner
-// SSE line framing unchanged.
-func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID string) {
+// Requests route via host.http.do_stream so request-log captures the outbound
+// call and host transport policy applies. The host bridge emits arbitrary 32KB
+// chunks, so we adapt to io.Reader and keep the bufio.Scanner SSE line framing
+// unchanged.
+func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID string, unwrap sseUnwrapFunc) {
 	// Always close the host stream exactly once on every exit path.
 	closed := false
 	closeOnce := func() {
@@ -115,16 +122,12 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			continue
 		}
 		payload := strings.TrimPrefix(line, "data:")
-		var outer map[string]any
-		if json.Unmarshal([]byte(payload), &outer) != nil {
-			continue
+		bodyStr, ok, done := unwrap([]byte(payload))
+		if done {
+			break
 		}
-		bodyStr, ok := outer["body"].(string)
 		if !ok {
 			continue
-		}
-		if bodyStr == "[DONE]" {
-			break
 		}
 		collector.feed(bodyStr)
 		cleaned := cleanChunkJSON(bodyStr)
@@ -151,18 +154,10 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	invalidateAccountCredits(authID, authUID)
 }
 
-// collectUpstreamStreamQoder is the QoderWork-flavoured synchronous fallback
-// (no async stream id): drain the upstream nested SSE, unwrap the inner
-// OpenAI chunks, return them as a slice. The collector, when non-nil,
-// observes the unwrapped inner chunks for usage extraction.
-func collectUpstreamStreamQoder(encodedBody string, sa *storedAuth, modelKey string, sseFramed bool, collector *sseUsageCollector) ([]pluginapi.ExecutorStreamChunk, int, error) {
-	httpReq, err := http.NewRequest(http.MethodPost, endpointChat, strings.NewReader(encodedBody))
-	if err != nil {
-		return nil, 0, err
-	}
-	if err := applyCosyHeaders(httpReq, sa, encodedBody, endpointChat, modelKey, true); err != nil {
-		return nil, 0, fmt.Errorf("cosy: %w", err)
-	}
+// collectUpstreamStream drains an upstream SSE response synchronously and
+// returns the unwrapped, cleaned chunks. Shared by both realms; the unwrap
+// function decides the envelope shape (CN nested vs global standard).
+func collectUpstreamStream(httpReq *http.Request, sseFramed bool, collector *sseUsageCollector, unwrap sseUnwrapFunc) ([]pluginapi.ExecutorStreamChunk, int, error) {
 	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
 	if err != nil {
 		return nil, 0, fmt.Errorf("http_error: %w", err)
@@ -181,12 +176,11 @@ func collectUpstreamStreamQoder(encodedBody string, sa *storedAuth, modelKey str
 			continue
 		}
 		payload := strings.TrimPrefix(line, "data:")
-		var outer map[string]any
-		if json.Unmarshal([]byte(payload), &outer) != nil {
-			continue
+		bodyStr, ok, done := unwrap([]byte(payload))
+		if done {
+			break
 		}
-		bodyStr, ok := outer["body"].(string)
-		if !ok || bodyStr == "[DONE]" {
+		if !ok {
 			continue
 		}
 		if collector != nil {
@@ -225,7 +219,7 @@ func clientNeedsSSEFrame(metadata map[string]any) bool {
 
 // cleanChunkJSON strips only the known-problematic empty tool-call shells
 // from choice deltas: a null/empty function_call and an empty tool_calls array
-// (QoderWork emits these on the terminal chunk, and strict clients interpret
+// (Qoder emits these on the terminal chunk, and strict clients interpret
 // them as a truncated tool call). Other empty-but-legal values are preserved:
 // content:"" is a valid delta (pure tool-call chunk) and the role-only first
 // chunk must survive so clients can establish the message role.
@@ -384,7 +378,7 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 		created = time.Now().Unix()
 	}
 	result := map[string]any{
-		"id":      firstNonEmpty(respID, "chatcmpl-qoderwork"),
+		"id":      firstNonEmpty(respID, "chatcmpl-qoder"),
 		"object":  "chat.completion",
 		"created": created,
 		"model":   firstNonEmpty(respModel, model),
@@ -404,7 +398,7 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 	return out, nil
 }
 
-// aggregateQoderSSE folds QoderWork's nested SSE stream into a single
+// aggregateQoderSSE folds Qoder's nested SSE stream into a single
 // OpenAI chat.completion object. The gateway emits frames shaped:
 //
 //	data:{"headers":{...},"body":"<json-string>","statusCodeValue":200,...}

@@ -14,39 +14,34 @@ import (
 
 // handleImportPAT accepts a raw PAT string (pt-...), exchanges it for a
 // jobToken pair, fetches userinfo, and persists via host.auth.save.
-// This is the primary onboarding path for QoderWork — PATs are created on
-// qoder.com.cn by the user and pasted into the panel.
+// The body carries {"pat": "...", "region": "global"|"cn"} — PATs are created
+// on the realm's website by the user and pasted into the panel.
 func handleImportPAT(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
-		PAT string `json:"pat"`
+		PAT    string `json:"pat"`
+		Region string `json:"region"`
 	}
 	_ = json.Unmarshal(req.Body, &body)
 	pat := strings.TrimSpace(body.PAT)
+	region := normalizeRegion(body.Region, defaultRegion())
 	if pat == "" {
 		return map[string]any{"success": false, "error": "missing pat field"}
 	}
 	if !strings.HasPrefix(pat, "pt-") {
 		return map[string]any{"success": false, "error": "PAT must start with pt-"}
 	}
-	tok, err := exchangePATForJobToken(pat)
+	tok, region, err := exchangePATForJobTokenAny(pat, region)
 	if err != nil {
 		return map[string]any{"success": false, "error": "jobToken exchange: " + err.Error()}
 	}
-	ui, _ := fetchUserInfo(tok.Token) // best-effort
-	sa := buildStoredAuthFromJobToken(pat, tok, ui)
+	ui, _ := fetchUserInfo(tok.Token, region) // best-effort
+	sa := buildStoredAuthFromJobToken(pat, tok, ui, region)
 
-	// Re-importing an existing credential must not drop user-managed fields
-	// (excluded-models / prefix / priority / headers ...), so base the write on
-	// the current physical file when one exists.
-	auth := toAuthData(sa)
-	var current []byte
-	if phys := physicalAuthByFileName(auth.FileName); phys != nil {
-		current = phys.JSON
-	}
-	fileJSON, err := buildAuthFileJSONPreserve(current, sa, false, displayNote(sa, nil, false), nil)
+	fileJSON, err := buildAuthFileJSON(sa, false, displayNote(sa, nil, false), nil)
 	if err != nil {
 		return map[string]any{"success": false, "error": err.Error()}
 	}
+	auth := toAuthData(sa)
 	saveReq := pluginapi.HostAuthSaveRequest{
 		Name: auth.FileName,
 		JSON: fileJSON,
@@ -95,7 +90,7 @@ func handleCheckinConfig(req pluginapi.ManagementRequest) map[string]any {
 }
 
 // handleSelectAuth sets the panel-selected account used for chat routing.
-// Region is always CN for QoderWork.
+// Region is always CN for Qoder.
 func handleSelectAuth(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
@@ -124,7 +119,7 @@ func handleSelectAuth(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{
 			"ok":          true,
 			"active_auth": f.ID,
-			"region":      "cn",
+			"region":      regionForAuth(sa),
 			"nickname":    sa.Account.Nickname,
 			"uid":         sa.Account.UID,
 		}
@@ -163,7 +158,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 				"auth_index": authIndex,
 				"nickname":   sa.Account.Nickname,
 				"uid":        sa.Account.UID,
-				"region":     "cn",
+				"region":     regionForAuth(sa),
 				"name":       f.Name,
 				"label":      f.Label,
 				"disabled":   f.Disabled,

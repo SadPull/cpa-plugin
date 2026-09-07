@@ -11,8 +11,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// wbAccount is one row of the dashboard.
-type wbAccount struct {
+// panelAccount is one row of the dashboard.
+type panelAccount struct {
 	AuthIndex string          `json:"auth_index"`
 	AuthID    string          `json:"auth_id,omitempty"`
 	Name      string          `json:"name"`
@@ -62,7 +62,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	// Also prune stale lifecycle state and checkin locks for gone accounts.
 	pruneLifecycleState()
 	pruneCheckinLocks()
-	out := make([]wbAccount, len(files))
+	out := make([]panelAccount, len(files))
 	// Accounts are independent — fetch their dashboards concurrently. With 4
 	// accounts this cuts cold-load latency from ~4×(3 serial upstream calls)
 	// to roughly one slowest account.
@@ -71,7 +71,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 		wg.Add(1)
 		go func(i int, f pluginapi.HostAuthFileEntry) {
 			defer wg.Done()
-			acct := wbAccount{
+			acct := panelAccount{
 				AuthIndex: f.AuthIndex,
 				AuthID:    f.ID,
 				Name:      f.Name,
@@ -94,7 +94,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			}
 			acct.Nickname = sa.Account.Nickname
 			acct.UID = sa.Account.UID
-			acct.Region = "cn"
+			acct.Region = regionForAuth(sa)
 			if fetchCredits {
 				plan, ci, cr, errs := cachedAccountDetails(f.ID, sa, force)
 				acct.Plan = plan
@@ -189,7 +189,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 }
 
 // summarizeCredits aggregates remain/used across dashboard accounts.
-func summarizeCredits(accounts []wbAccount) map[string]any {
+func summarizeCredits(accounts []panelAccount) map[string]any {
 	var remain, used, size, cnRemain, cnUsed, cnSize, glRemain, glUsed, glSize int64
 	var known, disabledN, exhaustedN, packs int
 	for _, a := range accounts {

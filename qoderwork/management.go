@@ -1,4 +1,4 @@
-// management.go implements the QoderWork management API and web panel:
+// management.go implements the Qoder management API and web panel:
 // account dashboard (nickname, credits, plan, check-in streak), manual/auto
 // check-in (daily at 09:00 and 21:00 local time), and quota refresh.
 package main
@@ -14,10 +14,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
-
-// billingBase hosts the Buddy-gas-station check-in and resource-package APIs.
-// It is a var (not const) so tests can override it with an httptest server.
-var billingBase = "https://openapi.qoder.com.cn"
 
 // If the panel later wants to surface "usage export ready", re-add it and wire
 // it into buildDashboardEx's response.
@@ -116,19 +112,19 @@ func managementRegistration() managementRegistrationResponse {
 	base := "/plugins/" + providerName
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
-			{Method: http.MethodGet, Path: base + "/accounts", Description: "List QoderWork accounts with credits, plan and check-in status."},
+			{Method: http.MethodGet, Path: base + "/accounts", Description: "List Qoder accounts with credits, plan and check-in status."},
 			{Method: http.MethodPost, Path: base + "/refresh", Description: "Force refresh quota/cache for all accounts."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Manually check in one account (auth_index) or all."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
-			{Method: http.MethodPost, Path: base + "/import", Description: "Import a QoderWork PAT (pt-...) by exchanging it for a jobToken pair and persisting."},
+			{Method: http.MethodPost, Path: base + "/import", Description: "Import a Qoder PAT (pt-...) by exchanging it for a jobToken pair and persisting."},
 			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodPost, Path: base + "/claim-pro", Description: "Claim one-time Pro upgrade pack for one account (auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
 		},
 		Resources: []resourceRoute{
-			{Path: "/panel", Menu: "QoderWork", Description: "QoderWork dashboard: credits, check-in, plan, import."},
+			{Path: "/panel", Menu: "Qoder", Description: "Qoder dashboard: credits, check-in, plan, import."},
 		},
 	}
 }
@@ -196,7 +192,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 // -----------------------------------------------------------------------------
 //
 // When management_key is configured (config_yaml or WB_MANAGEMENT_KEY env), all
-// mutating endpoints under /v0/management/plugins/qoderwork/* require a matching
+// mutating endpoints under /v0/management/plugins/qoder/* require a matching
 // Bearer token. Read-only GET endpoints (accounts/credits/panel) pass through so
 // the panel can render before the user has pasted a key — the panel itself
 // supplies the key on every call via Authorization header.

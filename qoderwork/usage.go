@@ -27,7 +27,7 @@ func handleUsage(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &record); err != nil {
 		return nil, err
 	}
-	// Only forward qoderwork's own records; the host will route other plugins'
+	// Only forward qoder's own records; the host will route other plugins'
 	// usage to their own UsagePlugin.
 	if record.Provider != "" && record.Provider != providerName {
 		return okEnvelope(map[string]any{"forwarded": false})
@@ -120,14 +120,14 @@ func forwardUsageToCPAMP(alias, model, authID string, started time.Time, detail 
 	payload := map[string]any{
 		"timestamp":     ts.UTC().Format(time.RFC3339Nano),
 		"latency_ms":    latencyMs,
-		"source":        "qoderwork",
+		"source":        "qoder",
 		"auth_index":    strings.TrimSpace(authID),
 		"provider":      providerName,
 		"model":         model,
 		"alias":         alias,
 		"endpoint":      "POST /v1/chat/completions",
 		"auth_type":     "oauth",
-		"executor_type": "qoderwork",
+		"executor_type": "qoder",
 		"generate":      true,
 		"failed":        failed,
 		"tokens": map[string]any{
@@ -222,7 +222,7 @@ func usageDetailFromCompletion(payload []byte) usage.Detail {
 }
 
 // sseUsageCollector scans upstream SSE chunks and keeps the last "usage"
-// object seen (QoderWork emits it on the terminal chunk).
+// object seen (Qoder emits it on the terminal chunk).
 type sseUsageCollector struct {
 	last map[string]any
 }

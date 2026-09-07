@@ -1,6 +1,6 @@
-// active_auth.go tracks the panel-selected QoderWork account used for routing.
+// active_auth.go tracks the panel-selected Qoder account used for routing.
 //
-// Region is always CN for QoderWork —
+// Region is always CN for Qoder —
 // no per-request JWT iss decode. Default: first available candidate. When the
 // active account is exhausted/disabled/missing, randomly switch to another
 // non-exhausted candidate and remember the choice.
@@ -49,7 +49,7 @@ type activeAuthCandidate struct {
 	Exhausted bool
 }
 
-// pickActiveAuth chooses which qoderwork auth to use from host candidates.
+// pickActiveAuth chooses which qoder auth to use from host candidates.
 // The panel selection is sticky: it stays on the current account unless that
 // account is no longer in the candidate list (disabled/deleted by host) or
 // is marked exhausted in cache. When switching, it picks the first
@@ -106,9 +106,9 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 //
 // This ensures the panel's selected card always matches what scheduler.pick
 // actually routes to. No silent drift.
-func ensureDefaultActiveAuth(accounts []wbAccount) string {
+func ensureDefaultActiveAuth(accounts []panelAccount) string {
 	cur := getActiveAuthID()
-	live := make(map[string]wbAccount, len(accounts))
+	live := make(map[string]panelAccount, len(accounts))
 	for _, a := range accounts {
 		live[a.AuthID] = a
 	}

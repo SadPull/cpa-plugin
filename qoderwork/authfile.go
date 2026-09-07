@@ -1,5 +1,5 @@
 // authfile.go owns every physical auth-file path the plugin touches: the
-// qoderwork-<uid>.json naming rule, UID sanitization (path-traversal defense),
+// qoder-<uid>.json naming rule, UID sanitization (path-traversal defense),
 // path safety checks, and the read / write / delete helpers that talk to the
 // host's auth store via host.auth.* RPC. Callers above (lifecycle reconcile)
 // decide when to disable / re-enable / delete; this file decides how.
@@ -17,8 +17,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// authFileNameFor matches toAuthData naming: always qoderwork-<uid>.json when UID is known.
-// Bare "qoderwork.json" is legacy single-account only (no UID).
+// authFileNameFor matches toAuthData naming: always qoder-<uid>.json when UID is known.
+// Bare "qoder.json" is legacy single-account only (no UID).
 var unsafeUIDChars = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 
 func sanitizeUIDForFileName(uid string) string {
@@ -36,21 +36,21 @@ func sanitizeUIDForFileName(uid string) string {
 func authFileNameFor(sa *storedAuth) string {
 	if sa != nil {
 		if uid := sanitizeUIDForFileName(sa.Account.UID); uid != "" {
-			return "qoderwork-" + uid + ".json"
+			return "qoder-" + uid + ".json"
 		}
 	}
 	return authFileName
 }
 
 // isLegacyAuthName reports the historical single-file name that collides
-// with multi-account qoderwork-<uid>.json for the same credential.
+// with multi-account qoder-<uid>.json for the same credential.
 
 func isLegacyAuthName(name string) bool {
 	return strings.EqualFold(strings.TrimSpace(name), authFileName)
 }
 
 // resolveAuthFileTarget picks the canonical file name + path for save/delete.
-// Prefer qoderwork-<uid>.json; if the host still points at legacy qoderwork.json
+// Prefer qoder-<uid>.json; if the host still points at legacy qoder.json
 // for a UID-bearing account, rewrite to the uid name and schedule legacy removal.
 
 func resolveAuthFileTarget(sa *storedAuth, phys *hostAuthPhysical) (name, path string, legacyPath string) {
@@ -123,7 +123,7 @@ func hostAuthPersist(name, path string, raw []byte) error {
 }
 
 // hostAuthPersistMigrate is like hostAuthPersist but also removes a legacy path
-// when the canonical name differs (qoderwork.json → qoderwork-<uid>.json).
+// when the canonical name differs (qoder.json → qoder-<uid>.json).
 
 func hostAuthPersistMigrate(name, path, legacyPath string, raw []byte) error {
 	if err := hostAuthPersist(name, path, raw); err != nil {
@@ -140,6 +140,9 @@ func hostAuthPersistMigrate(name, path, legacyPath string, raw []byte) error {
 	// If path points at legacy but name is uid form, do not dual-write path (would keep legacy alive).
 	return nil
 }
+
+// buildAuthFileJSON produces host-save payload: nested storage + top-level metadata.
+// extra merges additional top-level keys (optional).
 
 func hostAuthSaveJSON(name string, raw []byte) error {
 	name = strings.TrimSpace(name)
@@ -168,25 +171,9 @@ func hostAuthSaveJSON(name string, raw []byte) error {
 
 // lifecycleStateUnchanged avoids redundant saves when note/disabled unchanged.
 
-// buildAuthFileJSONPreserve rewrites an auth file without dropping
-// user-managed top-level fields. It starts from the current physical JSON
-// (current), overwrites only the 7 keys the plugin owns
-// (type/provider/logo/disabled/note/auth/account), then applies extra.
-// Unknown keys — excluded-models, prefix, proxy_url, priority, headers and
-// any panel-set metadata — pass through untouched. If current is empty or
-// not a JSON object (e.g. first-ever write), it behaves like buildAuthFileJSON.
-//
-// This mirrors the map round-trip used by the models-refresh stamp path so
-// that "no field — known or user-added — is lost" holds for every rewrite
-// path, not just the models-catalog push.
-
-func buildAuthFileJSONPreserve(current []byte, sa *storedAuth, disabled bool, note string, extra map[string]any) ([]byte, error) {
+func buildAuthFileJSON(sa *storedAuth, disabled bool, note string, extra map[string]any) ([]byte, error) {
 	if sa == nil {
 		return nil, fmt.Errorf("nil storedAuth")
-	}
-	base := map[string]any{}
-	if err := json.Unmarshal(current, &base); err != nil || base == nil {
-		base = map[string]any{}
 	}
 	storage, err := json.Marshal(sa)
 	if err != nil {
@@ -196,17 +183,19 @@ func buildAuthFileJSONPreserve(current []byte, sa *storedAuth, disabled bool, no
 	if err := json.Unmarshal(storage, &nested); err != nil {
 		return nil, err
 	}
-	base["type"] = providerName
-	base["provider"] = providerName
-	base["logo"] = pluginLogoURL
-	base["disabled"] = disabled
-	base["note"] = note
-	base["auth"] = nested["auth"]
-	base["account"] = nested["account"]
-	for k, v := range extra {
-		base[k] = v
+	out := map[string]any{
+		"type":     providerName,
+		"provider": providerName,
+		"logo":     pluginLogoURL,
+		"disabled": disabled,
+		"note":     note,
+		"auth":     nested["auth"],
+		"account":  nested["account"],
 	}
-	return json.Marshal(base)
+	for k, v := range extra {
+		out[k] = v
+	}
+	return json.Marshal(out)
 }
 
 // parseDisabledFromAuthJSON reads top-level disabled from physical auth JSON.
@@ -219,34 +208,7 @@ func parseDisabledFromAuthJSON(raw []byte) bool {
 	return m.Disabled
 }
 
-// userFieldsFromAuthJSON extracts the user-managed top-level fields from a
-// physical auth file, for use as a metadata base. The host persists an auth
-// as mergedStorageJSON(StorageJSON, auth.Metadata) — i.e. the file's top-level
-// keys come from the Metadata the plugin returned at parse time. If ParseAuth
-// returns only its own 5 keys, every watcher re-parse (triggered by ANY file
-// write, including the panel's own PATCH) makes the host persist the file back
-// WITHOUT excluded-models / prefix / proxy_url / priority / headers, silently
-// undoing the user's model-disable setting within the same second.
-//
-// Nested credential blocks (auth/account) are excluded — they travel in
-// StorageJSON, not Metadata. Mirrors the workbuddy helper.
-func userFieldsFromAuthJSON(raw []byte) map[string]any {
-	if len(raw) == 0 {
-		return nil
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(raw, &doc); err != nil || doc == nil {
-		return nil
-	}
-	delete(doc, "auth")
-	delete(doc, "account")
-	if len(doc) == 0 {
-		return nil
-	}
-	return doc
-}
-
-// isSafeAuthPath rejects non-qoderwork filenames, empty paths, and
+// isSafeAuthPath rejects non-qoder filenames, empty paths, and
 // traversal attempts. It validates both the basename pattern AND that the path
 // does not escape via ".." segments. Callers that need to confine deletes to
 // a specific directory should additionally check isPathUnder(path, dir).
@@ -262,7 +224,7 @@ func isSafeAuthPath(path string) bool {
 	}
 	base := filepath.Base(path)
 	lower := strings.ToLower(base)
-	if !strings.HasPrefix(lower, "qoderwork-") && lower != "qoderwork.json" {
+	if !strings.HasPrefix(lower, "qoder-") && lower != "qoder.json" {
 		return false
 	}
 	if !strings.HasSuffix(lower, ".json") {

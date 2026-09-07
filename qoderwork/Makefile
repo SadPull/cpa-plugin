@@ -6,7 +6,7 @@ LDFLAGS := -X main.version=$(VERSION)
 
 # Default target: build the plugin for the current platform.
 build:
-	CGO_ENABLED=1 $(GO) build -buildmode=c-shared -ldflags "$(LDFLAGS)" -o qoderwork.so .
+	CGO_ENABLED=1 $(GO) build -buildmode=c-shared -ldflags "$(LDFLAGS)" -o qoder.so .
 
 # Run all tests with race detector.
 test:
@@ -22,7 +22,7 @@ lint:
 
 # Clean build artifacts.
 clean:
-	rm -f qoderwork.so qoderwork.h
+	rm -f qoder.so qoder.h
 	rm -rf bin/ dist/ coverage.out coverage.html
 
 # Cross-compile for all supported platforms (requires cross C toolchains).
@@ -31,12 +31,12 @@ release: clean
 	@mkdir -p dist
 	@for target in linux/amd64 linux/arm64; do \
 	  os=$${target%/*}; arch=$${target#*/}; \
-	  out=dist/qoderwork_$(VERSION)_$${os}_$${arch}; \
+	  out=dist/qoder_$(VERSION)_$${os}_$${arch}; \
 	  mkdir -p $$out; \
-	  GOOS=$$os GOARCH=$$arch CGO_ENABLED=1 $(GO) build -buildmode=c-shared -ldflags "$(LDFLAGS)" -o $$out/qoderwork.so . 2>&1 | grep -v "cgo is not enabled" || true; \
-	  if [ -f $$out/qoderwork.so ]; then \
+	  GOOS=$$os GOARCH=$$arch CGO_ENABLED=1 $(GO) build -buildmode=c-shared -ldflags "$(LDFLAGS)" -o $$out/qoder.so . 2>&1 | grep -v "cgo is not enabled" || true; \
+	  if [ -f $$out/qoder.so ]; then \
 	    cp README.md README_CN.md LICENSE $$out/; \
-	    cd dist && zip -qr qoderwork_$(VERSION)_$${os}_$${arch}.zip qoderwork_$(VERSION)_$${os}_$${arch} && cd ..; \
+	    cd dist && zip -qr qoder_$(VERSION)_$${os}_$${arch}.zip qoder_$(VERSION)_$${os}_$${arch} && cd ..; \
 	    echo "built $$out"; \
 	  fi; \
 	done

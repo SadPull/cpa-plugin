@@ -98,6 +98,9 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 	go func() { defer wg.Done(); plan = fetchPaymentType(sa) }()
 	go func() {
 		defer wg.Done()
+		if regionForAuth(sa) != RegionCN {
+			return // check-in is CN-only; leave nil so the panel hides it
+		}
 		if c, err := fetchCheckinStatus(sa); err == nil {
 			ci = c
 		} else {

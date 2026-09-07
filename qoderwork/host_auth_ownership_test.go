@@ -6,7 +6,7 @@ import (
 )
 
 // WorkBuddy OAuth credential (nested shape, CN realm, NO top-level type) as
-// seen in the wild — the file the host used to mislabel as qoderwork.
+// seen in the wild — the file the host used to mislabel as qoder.
 const wbOAuthNestedCN = `{
   "auth": {"accessToken": "wb-at", "refreshToken": "wb-rt", "expiresAt": 1893456000, "domain": "www.codebuddy.cn"},
   "account": {"uid": "wbuid-1", "nickname": "wb user"}
@@ -23,9 +23,9 @@ const qwOAuthNested = `{
 }`
 
 func TestDeclaredTypeFromJSON(t *testing.T) {
-	typed := `{"type":"qoderwork","provider":"qoderwork","auth":{}}`
-	if got := declaredTypeFromJSON(json.RawMessage(typed)); got != "qoderwork" {
-		t.Fatalf("typed file: got %q want qoderwork", got)
+	typed := `{"type":"qoder","provider":"qoder","auth":{}}`
+	if got := declaredTypeFromJSON(json.RawMessage(typed)); got != "qoder" {
+		t.Fatalf("typed file: got %q want qoder", got)
 	}
 	foreign := `{"type":"workbuddy","auth":{}}`
 	if got := declaredTypeFromJSON(json.RawMessage(foreign)); got != "workbuddy" {
@@ -41,11 +41,11 @@ func TestDomainFromJSON(t *testing.T) {
 		t.Fatalf("nested workbuddy domain: got %q", got)
 	}
 	if got := domainFromJSON(json.RawMessage(qwOAuthNested)); got != "qoder.com.cn" {
-		t.Fatalf("nested qoderwork domain: got %q", got)
+		t.Fatalf("nested qoder domain: got %q", got)
 	}
 	flat := `{"accessToken":"x","domain":"qoder.com.cn"}`
 	if got := domainFromJSON(json.RawMessage(flat)); got != "qoder.com.cn" {
-		t.Fatalf("flat qoderwork domain: got %q", got)
+		t.Fatalf("flat qoder domain: got %q", got)
 	}
 }
 
@@ -63,7 +63,7 @@ func TestIsQoderDomain(t *testing.T) {
 }
 
 // The core regression: a type-less workbuddy credential (CN or Global) must be
-// rejected by the qoderwork ownership check once its domain is known.
+// rejected by the qoder ownership check once its domain is known.
 func TestWorkbuddyCredentialRejectedByDomain(t *testing.T) {
 	for name, raw := range map[string]string{"cn": wbOAuthNestedCN, "global": wbOAuthNestedGlobal} {
 		d := domainFromJSON(json.RawMessage(raw))
@@ -71,10 +71,10 @@ func TestWorkbuddyCredentialRejectedByDomain(t *testing.T) {
 			t.Fatalf("%s: expected a domain to be extracted", name)
 		}
 		if isQoderDomain(d) {
-			t.Errorf("%s: workbuddy domain %q must NOT be claimed by qoderwork", name, d)
+			t.Errorf("%s: workbuddy domain %q must NOT be claimed by qoder", name, d)
 		}
-		if declaredTypeFromJSON(json.RawMessage(raw)) == "qoderwork" {
-			t.Errorf("%s: type-less workbuddy file must not read as qoderwork", name)
+		if declaredTypeFromJSON(json.RawMessage(raw)) == "qoder" {
+			t.Errorf("%s: type-less workbuddy file must not read as qoder", name)
 		}
 	}
 }

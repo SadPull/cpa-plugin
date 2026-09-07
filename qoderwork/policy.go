@@ -113,7 +113,7 @@ func isSoftRateLimit(status int, body string) bool {
 }
 
 // lifecycleActionFor chooses disable/none from credits.
-// QoderWork is CN-only — disable (not delete) so check-in can restore credits
+// Qoder is CN-only — disable (not delete) so check-in can restore credits
 // without forcing the user to re-import a PAT.
 func lifecycleActionFor(region string, cr *creditsSummary) lifecycleAction {
 	if !shouldActOnCredits(cr) {
@@ -139,13 +139,7 @@ func shouldReenableCN(disabled bool, cr *creditsSummary) bool {
 
 // displayNote builds a one-line note for CPAMP Auth cards.
 func displayNote(sa *storedAuth, cr *creditsSummary, disabled bool) string {
-	region := strings.ToUpper("cn")
-	if region == "CN" {
-		region = "CN"
-	} else {
-		region = "CN"
-	}
-	parts := []string{region}
+	parts := []string{strings.ToUpper(regionForAuth(sa))}
 	if disabled {
 		parts = append(parts, "已禁用")
 	}
@@ -170,15 +164,11 @@ func displayNote(sa *storedAuth, cr *creditsSummary, disabled bool) string {
 	return note
 }
 
-// labelForAuth adds [CN] for host labels.
+// labelForAuth adds a realm tag ([CN]/[GLOBAL]) to host labels.
 func labelForAuth(sa *storedAuth) string {
-	base := "QoderWork"
+	base := "Qoder"
 	if sa != nil && strings.TrimSpace(sa.Account.Nickname) != "" {
 		base = strings.TrimSpace(sa.Account.Nickname)
 	}
-	tag := "CN"
-	if "cn" == "global" {
-		tag = "CN"
-	}
-	return base + " [" + tag + "]"
+	return base + " [" + strings.ToUpper(regionForAuth(sa)) + "]"
 }
