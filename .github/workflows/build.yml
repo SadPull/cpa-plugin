@@ -238,6 +238,9 @@ jobs:
     name: ${{ matrix.id }} ${{ matrix.target }} (go-cross)
     needs: test
     runs-on: ubuntu-24.04
+    # freebsd toolchain fetch is currently broken upstream and freebsd assets
+    # are not required by the release job — treat those entries as best-effort.
+    continue-on-error: ${{ matrix.optional || false }}
     strategy:
       fail-fast: false
       matrix:
@@ -250,6 +253,7 @@ jobs:
             dir: workbuddy
             target: freebsd-amd64
             ext: so
+            optional: true
           - id: qoder
             dir: qoderwork
             target: windows-arm64
@@ -258,6 +262,7 @@ jobs:
             dir: qoderwork
             target: freebsd-amd64
             ext: so
+            optional: true
           - id: cpa-model-visibility
             dir: cpa-model-visibility
             target: windows-arm64
@@ -266,6 +271,7 @@ jobs:
             dir: cpa-model-visibility
             target: freebsd-amd64
             ext: so
+            optional: true
     defaults:
       run:
         shell: bash
