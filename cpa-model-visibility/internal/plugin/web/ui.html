@@ -121,6 +121,7 @@
     <p class="desc">
       规则保存在 config.yaml 的 plugins.configs.cpa-model-visibility 段，保存后立即热生效（无需重启）。
       模型条目可以直接点选，也支持通配符：<code>abc*</code> 前缀、<code>*abc</code> 后缀、<code>a*bc</code> 两端锚定、<code>*</code> 全部；deny 永远优先于 allow。
+      「提供方」是模型条目的 owned_by 字段（厂商名，不是渠道名）：codex 渠道的模型 owned_by 显示为 <code>openai</code>，候选列表里已标注渠道对应关系。
     </p>
     <div class="row" style="margin-bottom:12px">
       <span class="field">
@@ -214,6 +215,9 @@ async function api(path) {
 let editor = { default: "empty", debug: false, rules: [] };
 /* catalog: { models: string[], ownedBy: string[] } 供点选器使用 */
 let catalog = { models: [], ownedBy: [] };
+/* providerChannels: owned_by -> 渠道名列表（来自宿主 model-definitions 端点） */
+let providerChannels = {};
+const KNOWN_CHANNELS = ["codex", "antigravity", "claude", "gemini", "vertex", "aistudio", "grok", "xai", "meta"];
 
 function setMsg(id, text, kind) {
   const el = $(id);
@@ -226,7 +230,37 @@ function refreshDatalists() {
   dlModels.innerHTML = "";
   dlOwned.innerHTML = "";
   catalog.models.forEach(m => { const o = document.createElement("option"); o.value = m; dlModels.append(o); });
-  catalog.ownedBy.forEach(m => { const o = document.createElement("option"); o.value = m; dlOwned.append(o); });
+  const counts = {};
+  (catalog.modelsWithOwner || []).forEach(o => { counts[o.owned_by] = (counts[o.owned_by] || 0) + 1; });
+  catalog.ownedBy.forEach(ob => {
+    const o = document.createElement("option");
+    o.value = ob;
+    const channels = (providerChannels[ob] || []).join("/");
+    const count = counts[ob] ? counts[ob] + " 个模型" : "";
+    const note = [count, channels ? "渠道: " + channels : ""].filter(Boolean).join(" · ");
+    if (note) o.textContent = ob + "（" + note + "）";
+    dlOwned.append(o);
+  });
+}
+
+/* owned_by -> 渠道 映射：宿主 model-definitions/<channel> 是唯一权威来源。
+   关键事实：codex 渠道的模型 owned_by 是 "openai"，不是 "codex"。 */
+async function loadProviderChannels() {
+  for (const channel of KNOWN_CHANNELS) {
+    try {
+      const res = await fetch("/v0/management/model-definitions/" + channel, { headers: authHeaders() });
+      if (!res.ok) continue;
+      const data = await res.json();
+      (data.models || []).forEach(m => {
+        const ob = m && m.owned_by;
+        if (!ob) return;
+        (providerChannels[ob] = providerChannels[ob] || new Set()).add(channel);
+      });
+    } catch (_) { /* 单个渠道失败不影响其他 */ }
+  }
+  // Set -> 数组
+  for (const k of Object.keys(providerChannels)) providerChannels[k] = [...providerChannels[k]];
+  refreshDatalists();
 }
 
 /* catalog 来源 1：规则里现成的下游 key（后台静默尝试） */
@@ -251,11 +285,15 @@ async function loadCatalogFromRuleKeys() {
 function absorbCatalog(data) {
   const models = new Set(catalog.models);
   const ownedBy = new Set(catalog.ownedBy);
+  const modelsWithOwner = catalog.modelsWithOwner || [];
   (data.data || []).forEach(m => {
     if (m && typeof m.id === "string" && m.id) models.add(m.id);
-    if (m && typeof m.owned_by === "string" && m.owned_by) ownedBy.add(m.owned_by);
+    if (m && typeof m.owned_by === "string" && m.owned_by) {
+      ownedBy.add(m.owned_by);
+      if (!modelsWithOwner.some(x => x.id === m.id)) modelsWithOwner.push({ id: m.id, owned_by: m.owned_by });
+    }
   });
-  catalog = { models: [...models].sort(), ownedBy: [...ownedBy].sort() };
+  catalog = { models: [...models].sort(), ownedBy: [...ownedBy].sort(), modelsWithOwner };
   refreshDatalists();
 }
 
@@ -353,10 +391,10 @@ function renderRules() {
       pickerField("deny — 模型黑名单（优先于 allow）", rule.deny, {
         datalist: "dl-models", danger: true, get: () => rule.deny, set: v => rule.deny = v,
       }),
-      pickerField("allow_owned_by — 提供方白名单", rule.allow_owned_by, {
+      pickerField("allow_owned_by — 提供方白名单（owned_by）", rule.allow_owned_by, {
         datalist: "dl-ownedby", get: () => rule.allow_owned_by, set: v => rule.allow_owned_by = v,
       }),
-      pickerField("deny_owned_by — 提供方黑名单", rule.deny_owned_by, {
+      pickerField("deny_owned_by — 提供方黑名单（owned_by）", rule.deny_owned_by, {
         datalist: "dl-ownedby", danger: true, get: () => rule.deny_owned_by, set: v => rule.deny_owned_by = v,
       }),
     );
@@ -393,6 +431,7 @@ async function loadAll() {
   ["rules-card", "sim-card"].forEach(id => $(id).classList.remove("hidden"));
   $("conn").textContent = "已连接";
   if (!catalog.models.length) loadCatalogFromRuleKeys();
+  loadProviderChannels();
 }
 
 async function saveAll() {
