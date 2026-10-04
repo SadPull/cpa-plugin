@@ -45,24 +45,36 @@
   }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.danger { color: var(--danger); border-color: var(--border); background: transparent; }
+  button.small { padding: 3px 10px; font-size: 12px; }
   button:disabled { opacity: .5; cursor: not-allowed; }
   input, select, textarea {
     background: var(--bg); color: var(--text); border: 1px solid var(--border);
     border-radius: 8px; padding: 7px 10px; font-size: 13px; font-family: inherit;
   }
-  textarea { width: 100%; min-height: 52px; resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .mono, input.mono, textarea.mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
   .rule {
     border: 1px solid var(--border); border-radius: 10px; padding: 12px;
-    display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;
+    display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px;
     background: var(--bg);
   }
   .rule-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .rule-head .keys { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
   .field { display: flex; flex-direction: column; gap: 4px; }
-  .field label { font-size: 12px; color: var(--muted); }
+  .field > label { font-size: 12px; color: var(--muted); }
   .field .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+  .picker-entries { display: flex; flex-wrap: wrap; gap: 6px; min-height: 24px; }
+  .picker-entries .entry {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: var(--accent-weak); color: var(--text);
+    border-radius: 6px; padding: 2px 8px;
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+  }
+  .picker-entries .entry.deny-entry { background: var(--danger-bg); }
+  .picker-entries .entry a { cursor: pointer; color: inherit; text-decoration: none; font-weight: 700; }
+  .picker-input-row { display: flex; gap: 6px; }
+  .picker-input-row input { flex: 1; min-width: 0; }
   .badge { border-radius: 6px; padding: 2px 8px; font-size: 12px; display: inline-block; }
   .badge.ok { background: var(--ok-bg); color: var(--ok); }
   .badge.warn { background: var(--warn-bg); color: var(--warn); }
@@ -71,14 +83,12 @@
   .models span {
     background: var(--chip); border-radius: 6px; padding: 2px 8px;
     font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+    cursor: pointer;
   }
   .msg { font-size: 13px; min-height: 18px; }
   .msg.err { color: var(--danger); }
   .msg.ok { color: var(--ok); }
   .hidden { display: none !important; }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; }
   code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
 </style>
 </head>
@@ -110,7 +120,7 @@
     <h2>可见性规则</h2>
     <p class="desc">
       规则保存在 config.yaml 的 plugins.configs.cpa-model-visibility 段，保存后立即热生效（无需重启）。
-      模式支持精确、<code>abc*</code> 前缀、<code>*abc</code> 后缀、<code>a*bc</code> 两端锚定、<code>*</code> 全部；deny 永远优先于 allow。
+      模型条目可以直接点选，也支持通配符：<code>abc*</code> 前缀、<code>*abc</code> 后缀、<code>a*bc</code> 两端锚定、<code>*</code> 全部；deny 永远优先于 allow。
     </p>
     <div class="row" style="margin-bottom:12px">
       <span class="field">
@@ -130,6 +140,7 @@
       <button class="danger" id="reload-btn" style="align-self:flex-end">放弃修改</button>
       <button class="primary" id="save-btn" style="align-self:flex-end">保存全部规则</button>
     </div>
+    <div class="msg" id="catalog-msg" style="margin-bottom:8px"></div>
     <div id="rules-list"></div>
     <button id="add-rule">+ 添加规则</button>
     <div class="msg" id="rules-msg" style="margin-top:8px"></div>
@@ -138,7 +149,7 @@
   <!-- 可见性模拟 -->
   <div class="card hidden" id="sim-card">
     <h2>可见性模拟</h2>
-    <p class="desc">输入一个下游 key：上面显示它命中的规则，下面用它真实请求 /v1/models 看它实际能拉到的模型。</p>
+    <p class="desc">输入一个下游 key：上面显示它命中的规则，下面用它真实请求 /v1/models 看它实际能拉到的模型。点选模拟结果里的模型可快速加入规则。</p>
     <div class="row">
       <input id="sim-key" placeholder="sk-…" style="min-width:280px" class="mono">
       <button class="primary" id="sim-btn">模拟</button>
@@ -148,6 +159,9 @@
     <div id="sim-models"></div>
   </div>
 </div>
+
+<datalist id="dl-models"></datalist>
+<datalist id="dl-ownedby"></datalist>
 
 <script>
 "use strict";
@@ -185,7 +199,6 @@ function readManagementKey() {
   return "";
 }
 let managementKey = readManagementKey();
-const embedded = window.parent !== window;
 
 function authHeaders(extra) {
   return Object.assign({ "Authorization": "Bearer " + managementKey }, extra || {});
@@ -199,11 +212,109 @@ async function api(path) {
 
 /* --- 状态 --- */
 let editor = { default: "empty", debug: false, rules: [] };
+/* catalog: { models: string[], ownedBy: string[] } 供点选器使用 */
+let catalog = { models: [], ownedBy: [] };
 
 function setMsg(id, text, kind) {
   const el = $(id);
   el.textContent = text || "";
   el.className = "msg" + (kind ? " " + kind : "");
+}
+
+function refreshDatalists() {
+  const dlModels = $("dl-models"), dlOwned = $("dl-ownedby");
+  dlModels.innerHTML = "";
+  dlOwned.innerHTML = "";
+  catalog.models.forEach(m => { const o = document.createElement("option"); o.value = m; dlModels.append(o); });
+  catalog.ownedBy.forEach(m => { const o = document.createElement("option"); o.value = m; dlOwned.append(o); });
+}
+
+/* catalog 来源 1：规则里现成的下游 key（后台静默尝试） */
+async function loadCatalogFromRuleKeys() {
+  const keys = [];
+  editor.rules.forEach(r => (r.keys || []).forEach(k => k && keys.push(k)));
+  for (const key of keys.slice(0, 3)) {
+    try {
+      const res = await fetch("/v1/models", { headers: { "Authorization": "Bearer " + key } });
+      if (!res.ok) continue;
+      const data = await res.json();
+      absorbCatalog(data);
+      if (catalog.models.length) {
+        setMsg("catalog-msg", "模型选项已加载（" + catalog.models.length + " 个，来自 /v1/models）");
+        return;
+      }
+    } catch (_) { /* 尝试下一个 */ }
+  }
+  setMsg("catalog-msg", "暂未取得模型清单：可先在「可见性模拟」里用任一 key 拉一次，或在选择框中手动输入模式（支持通配符）");
+}
+
+function absorbCatalog(data) {
+  const models = new Set(catalog.models);
+  const ownedBy = new Set(catalog.ownedBy);
+  (data.data || []).forEach(m => {
+    if (m && typeof m.id === "string" && m.id) models.add(m.id);
+    if (m && typeof m.owned_by === "string" && m.owned_by) ownedBy.add(m.owned_by);
+  });
+  catalog = { models: [...models].sort(), ownedBy: [...ownedBy].sort() };
+  refreshDatalists();
+}
+
+/* --- 可点选字段 --- */
+function pickerField(label, entries, options) {
+  const f = document.createElement("div");
+  f.className = "field";
+  const l = document.createElement("label"); l.textContent = label;
+  f.append(l);
+
+  const chips = document.createElement("div");
+  chips.className = "picker-entries";
+  const renderChips = () => {
+    chips.innerHTML = "";
+    (options.get() || []).forEach((entry, i) => {
+      const span = document.createElement("span");
+      span.className = "entry" + (options.danger ? " deny-entry" : "");
+      const text = document.createElement("span"); text.textContent = entry;
+      const x = document.createElement("a"); x.textContent = "×"; x.title = "移除";
+      x.onclick = () => { const v = options.get(); v.splice(i, 1); options.set(v); renderChips(); };
+      span.append(text, x);
+      chips.append(span);
+    });
+    if (!(options.get() || []).length) {
+      const hint = document.createElement("span");
+      hint.className = "chip"; hint.textContent = "（空 = 不限制该维度）";
+      chips.append(hint);
+    }
+  };
+
+  const row = document.createElement("div");
+  row.className = "picker-input-row";
+  const input = document.createElement("input");
+  input.className = "mono";
+  input.setAttribute("list", options.datalist);
+  input.placeholder = "点击选择或输入模式";
+  const add = () => {
+    const value = input.value.trim();
+    if (!value) return;
+    if ((value.match(/\*/g) || []).length > 1) {
+      setMsg("rules-msg", "模式 " + value + " 无效：只支持一个 *", "err");
+      return;
+    }
+    const v = options.get();
+    if (v.some(e => e.toLowerCase() === value.toLowerCase())) { input.value = ""; return; }
+    v.push(value);
+    options.set(v);
+    input.value = "";
+    renderChips();
+    setMsg("rules-msg", "");
+  };
+  input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); add(); } });
+  const btn = document.createElement("button"); btn.className = "small"; btn.textContent = "添加";
+  btn.onclick = add;
+  row.append(input, btn);
+
+  renderChips();
+  f.append(chips, row);
+  return f;
 }
 
 /* --- 规则渲染与编辑 --- */
@@ -223,25 +334,31 @@ function renderRules() {
     del.onclick = () => { editor.rules.splice(index, 1); renderRules(); };
     head.append(keys, del);
 
-    const mk = (label, value, mono, onchange) => {
-      const f = document.createElement("div");
-      f.className = "field";
-      const l = document.createElement("label"); l.textContent = label;
-      const input = document.createElement("textarea");
-      if (mono) input.className = "mono";
-      input.value = (value || []).join("\n");
-      input.oninput = () => onchange(input.value.split("\n").map(s => s.trim()).filter(Boolean));
-      f.append(l, input);
-      return f;
-    };
+    const keyField = document.createElement("div");
+    keyField.className = "field";
+    const keyLabel = document.createElement("label"); keyLabel.textContent = "key（每行一个，精确匹配）";
+    const keyInput = document.createElement("textarea");
+    keyInput.className = "mono";
+    keyInput.value = (rule.keys || []).join("\n");
+    keyInput.oninput = () => rule.keys = keyInput.value.split("\n").map(s => s.trim()).filter(Boolean);
+    keyField.append(keyLabel, keyInput);
+
     const grid = document.createElement("div");
     grid.className = "grid2";
     grid.append(
-      mk("key（每行一个，精确匹配）", rule.keys, true, v => rule.keys = v),
-      mk("allow — 模型白名单（留空=不按 id 限制）", rule.allow, true, v => rule.allow = v),
-      mk("deny — 模型黑名单（优先于 allow）", rule.deny, true, v => rule.deny = v),
-      mk("allow_owned_by — 提供方白名单", rule.allow_owned_by, true, v => rule.allow_owned_by = v),
-      mk("deny_owned_by — 提供方黑名单", rule.deny_owned_by, true, v => rule.deny_owned_by = v),
+      keyField,
+      pickerField("allow — 模型白名单（留空=不按 id 限制）", rule.allow, {
+        datalist: "dl-models", get: () => rule.allow, set: v => rule.allow = v,
+      }),
+      pickerField("deny — 模型黑名单（优先于 allow）", rule.deny, {
+        datalist: "dl-models", danger: true, get: () => rule.deny, set: v => rule.deny = v,
+      }),
+      pickerField("allow_owned_by — 提供方白名单", rule.allow_owned_by, {
+        datalist: "dl-ownedby", get: () => rule.allow_owned_by, set: v => rule.allow_owned_by = v,
+      }),
+      pickerField("deny_owned_by — 提供方黑名单", rule.deny_owned_by, {
+        datalist: "dl-ownedby", danger: true, get: () => rule.deny_owned_by, set: v => rule.deny_owned_by = v,
+      }),
     );
     div.append(head, grid);
     list.append(div);
@@ -275,6 +392,7 @@ async function loadAll() {
   $("gate").classList.add("hidden");
   ["rules-card", "sim-card"].forEach(id => $(id).classList.remove("hidden"));
   $("conn").textContent = "已连接";
+  if (!catalog.models.length) loadCatalogFromRuleKeys();
 }
 
 async function saveAll() {
@@ -328,13 +446,19 @@ async function simulate() {
     const res = await fetch("/v1/models", { headers: { "Authorization": "Bearer " + key } });
     if (!res.ok) throw new Error("用该 key 请求 /v1/models 失败：HTTP " + res.status);
     const data = await res.json();
+    absorbCatalog(data); // 模拟结果同时充实点选器的选项库
     const ids = (data.data || []).map(m => m.id).sort();
     const head = document.createElement("div");
     head.style.marginTop = "8px";
-    head.innerHTML = "该 key 实际拉到 <b>" + ids.length + "</b> 个模型：";
+    head.innerHTML = "该 key 实际拉到 <b>" + ids.length + "</b> 个模型（点击模型可加入选中的规则）：";
     const chips = document.createElement("div");
     chips.className = "models";
-    ids.forEach(id => { const s = document.createElement("span"); s.textContent = id; chips.append(s); });
+    ids.forEach(id => {
+      const s = document.createElement("span");
+      s.textContent = id; s.title = "点击复制到剪贴板";
+      s.onclick = () => navigator.clipboard && navigator.clipboard.writeText(id);
+      chips.append(s);
+    });
     if (!ids.length) chips.innerHTML = "<span>（空 — 该 key 看不到任何模型）</span>";
     $("sim-models").append(head, chips);
     setMsg("sim-msg", "");
@@ -385,11 +509,7 @@ $("sim-key").addEventListener("keydown", e => { if (e.key === "Enter") simulate(
 $("default-policy").onchange = e => { editor.default = e.target.value; };
 $("debug-sel").onchange = e => { editor.debug = e.target.value === "true"; };
 
-if (embedded) document.body.classList.add("embedded");
 connect();
-if (managementKey && !embedded) {
-  /* 独立打开时若已保存密钥则直接连上；失败会在 connect 中显示鉴权门 */
-}
 </script>
 </body>
 </html>
