@@ -238,7 +238,7 @@ function refreshDatalists() {
     const channels = (providerChannels[ob] || []).join("/");
     const count = counts[ob] ? counts[ob] + " 个模型" : "";
     const note = [count, channels ? "渠道: " + channels : ""].filter(Boolean).join(" · ");
-    if (note) o.textContent = ob + "（" + note + "）";
+    if (note) o.label = ob + "（" + note + "）";
     dlOwned.append(o);
   });
 }
@@ -263,23 +263,26 @@ async function loadProviderChannels() {
   refreshDatalists();
 }
 
-/* catalog 来源 1：规则里现成的下游 key（后台静默尝试） */
+/* catalog 来源 1：规则里现成的下游 key（后台静默尝试）。
+   注意取所有 key 的并集：单个受限 key 的 /v1/models 是过滤后的视图，
+   只取第一个会漏掉被它屏蔽的模型/提供方（例如 fsht 看不到 owned_by=openai）。 */
 async function loadCatalogFromRuleKeys() {
   const keys = [];
   editor.rules.forEach(r => (r.keys || []).forEach(k => k && keys.push(k)));
-  for (const key of keys.slice(0, 3)) {
+  let ok = 0;
+  for (const key of keys.slice(0, 5)) {
     try {
       const res = await fetch("/v1/models", { headers: { "Authorization": "Bearer " + key } });
       if (!res.ok) continue;
-      const data = await res.json();
-      absorbCatalog(data);
-      if (catalog.models.length) {
-        setMsg("catalog-msg", "模型选项已加载（" + catalog.models.length + " 个，来自 /v1/models）");
-        return;
-      }
+      absorbCatalog(await res.json());
+      ok++;
     } catch (_) { /* 尝试下一个 */ }
   }
-  setMsg("catalog-msg", "暂未取得模型清单：可先在「可见性模拟」里用任一 key 拉一次，或在选择框中手动输入模式（支持通配符）");
+  if (catalog.models.length) {
+    setMsg("catalog-msg", "模型选项已加载（" + catalog.models.length + " 个，来自 " + ok + " 个 key 的 /v1/models 并集）");
+  } else {
+    setMsg("catalog-msg", "暂未取得模型清单：可先在「可见性模拟」里用任一 key 拉一次，或在选择框中手动输入模式（支持通配符）");
+  }
 }
 
 function absorbCatalog(data) {
