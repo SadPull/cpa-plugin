@@ -137,6 +137,7 @@ func registration() Registration {
 			Version:          version,
 			Author:           "SadPull",
 			GitHubRepository: "https://github.com/SadPull/cpa-plugin",
+			Logo:             pluginLogo,
 			ConfigFields: []ConfigField{
 				{Name: "debug", Type: "boolean", Description: "log each filtered catalog response"},
 				{Name: "default", Type: "enum", Description: "what a key without a matching rule sees: empty or full"},

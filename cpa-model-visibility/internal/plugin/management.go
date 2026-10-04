@@ -12,12 +12,13 @@ import (
 // host, so the plugin-id segment is part of every path on purpose.
 const managementBase = "/v0/management/plugins/" + PluginID
 
-func managementRegistration() struct {
-	Routes []ManagementRoute `json:"routes"`
-} {
-	return struct {
-		Routes []ManagementRoute `json:"routes"`
-	}{
+// resourceBase hosts browser-navigable plugin pages. The host serves /ui
+// without authentication (the HTML is public); the API calls the page makes
+// carry the management key themselves.
+const resourceBase = "/v0/resource/plugins/" + PluginID
+
+func managementRegistration() ManagementRegistration {
+	return ManagementRegistration{
 		Routes: []ManagementRoute{
 			{
 				Method:      "GET",
@@ -28,6 +29,13 @@ func managementRegistration() struct {
 				Method:      "GET",
 				Path:        managementBase + "/check",
 				Description: "Simulate the catalog a key would see",
+			},
+		},
+		Resources: []ResourceRoute{
+			{
+				Path:        resourceBase + "/ui",
+				Menu:        "模型可见性",
+				Description: "Per-key /v1/models catalog visibility",
 			},
 		},
 	}
@@ -41,9 +49,11 @@ func (a *App) handleManagement(request []byte) []byte {
 
 	path := strings.TrimSuffix(strings.TrimSpace(req.Path), "/")
 	switch {
-	case strings.EqualFold(req.Method, "GET") && strings.HasSuffix(path, "/rules"):
+	case strings.EqualFold(req.Method, "GET") && path == resourceBase+"/ui":
+		return uiResponse()
+	case strings.EqualFold(req.Method, "GET") && strings.HasSuffix(path, managementBase+"/rules"):
 		return a.managementRules()
-	case strings.EqualFold(req.Method, "GET") && strings.HasSuffix(path, "/check"):
+	case strings.EqualFold(req.Method, "GET") && strings.HasSuffix(path, managementBase+"/check"):
 		return a.managementCheck(req.Query)
 	default:
 		return errorEnvelope(404, "not_found", "management path "+path+" is not implemented")
@@ -92,7 +102,8 @@ func (a *App) managementRules() []byte {
 
 // managementCheck reports which rule a key would hit and with what patterns.
 // It deliberately returns rule data, not a catalog: the effective list is a
-// plain authenticated GET /v1/models with that key.
+// plain authenticated GET /v1/models with that key — which is exactly what
+// the panel's simulate card does from the browser.
 func (a *App) managementCheck(query map[string][]string) []byte {
 	values := url.Values(query)
 	key := strings.TrimSpace(values.Get("key"))

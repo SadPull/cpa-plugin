@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPA 模型可见性</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #1c2229; --muted: #697077;
+    --border: #dfe2e6; --accent: #2563eb; --accent-weak: #e8effd;
+    --ok: #16803c; --ok-bg: #e5f5ec; --warn: #b45309; --warn-bg: #fdf1e0;
+    --danger: #b91c1c; --danger-bg: #fdeaea; --chip: #eef0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c; --card: #1f2329; --text: #e4e7eb; --muted: #9aa1a9;
+      --border: #33383f; --accent: #5b8def; --accent-weak: #24314a;
+      --ok: #4ade80; --ok-bg: #1d3328; --warn: #fbbf24; --warn-bg: #3a2d14;
+      --danger: #f87171; --danger-bg: #3b1d1d; --chip: #2a2f36;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px; background: var(--bg); color: var(--text);
+    font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .chip {
+    background: var(--chip); border-radius: 999px; padding: 2px 10px;
+    font-size: 12px; color: var(--muted);
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 4px; }
+  .card .desc { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button {
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+    border-radius: 8px; padding: 7px 14px; cursor: pointer; font-size: 13px;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); border-color: var(--border); background: transparent; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  input, select, textarea {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 10px; font-size: 13px; font-family: inherit;
+  }
+  textarea { width: 100%; min-height: 52px; resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .rule {
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+    display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;
+    background: var(--bg);
+  }
+  .rule-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .rule-head .keys { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; color: var(--muted); }
+  .field .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+  .badge { border-radius: 6px; padding: 2px 8px; font-size: 12px; display: inline-block; }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn); }
+  .badge.mute { background: var(--chip); color: var(--muted); }
+  .models { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .models span {
+    background: var(--chip); border-radius: 6px; padding: 2px 8px;
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+  }
+  .msg { font-size: 13px; min-height: 18px; }
+  .msg.err { color: var(--danger); }
+  .msg.ok { color: var(--ok); }
+  .hidden { display: none !important; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>模型可见性</h1>
+    <span class="chip" id="ver">…</span>
+    <span class="chip" id="policy-chip">…</span>
+    <span class="chip" id="conn" style="margin-left:auto">未连接</span>
+  </header>
+  <div class="sub">
+    按下游 API Key 过滤 /v1/models 模型列表。请求层拦截（能否调用）由 key-billing 等机制负责，本面板只管「列表里显示什么」。
+  </div>
+
+  <!-- 鉴权门 -->
+  <div class="card hidden" id="gate">
+    <h2>需要管理密钥</h2>
+    <p class="desc">未能在管理面板的存储中自动取得管理密钥（独立打开页面时会出现）。输入后仅保存在本浏览器。</p>
+    <div class="row">
+      <input id="gate-key" type="password" placeholder="CPA 管理密钥" style="min-width:260px">
+      <button class="primary" id="gate-save">保存并连接</button>
+    </div>
+    <div class="msg" id="gate-msg"></div>
+  </div>
+
+  <!-- 规则编辑 -->
+  <div class="card hidden" id="rules-card">
+    <h2>可见性规则</h2>
+    <p class="desc">
+      规则保存在 config.yaml 的 plugins.configs.cpa-model-visibility 段，保存后立即热生效（无需重启）。
+      模式支持精确、<code>abc*</code> 前缀、<code>*abc</code> 后缀、<code>a*bc</code> 两端锚定、<code>*</code> 全部；deny 永远优先于 allow。
+    </p>
+    <div class="row" style="margin-bottom:12px">
+      <span class="field">
+        <label>无规则 key 的默认可见性</label>
+        <select id="default-policy">
+          <option value="empty">empty — 只看到空列表</option>
+          <option value="full">full — 看到全部模型</option>
+        </select>
+      </span>
+      <span class="field">
+        <label>调试日志</label>
+        <select id="debug-sel">
+          <option value="false">关闭</option>
+          <option value="true">开启</option>
+        </select>
+      </span>
+      <button class="danger" id="reload-btn" style="align-self:flex-end">放弃修改</button>
+      <button class="primary" id="save-btn" style="align-self:flex-end">保存全部规则</button>
+    </div>
+    <div id="rules-list"></div>
+    <button id="add-rule">+ 添加规则</button>
+    <div class="msg" id="rules-msg" style="margin-top:8px"></div>
+  </div>
+
+  <!-- 可见性模拟 -->
+  <div class="card hidden" id="sim-card">
+    <h2>可见性模拟</h2>
+    <p class="desc">输入一个下游 key：上面显示它命中的规则，下面用它真实请求 /v1/models 看它实际能拉到的模型。</p>
+    <div class="row">
+      <input id="sim-key" placeholder="sk-…" style="min-width:280px" class="mono">
+      <button class="primary" id="sim-btn">模拟</button>
+    </div>
+    <div class="msg" id="sim-msg"></div>
+    <div id="sim-rule"></div>
+    <div id="sim-models"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const PLUGIN_BASE = "/v0/management/plugins/cpa-model-visibility";
+const OWN_KEY_STORE = "cpa-model-visibility.managementKey";
+const $ = (id) => document.getElementById(id);
+
+/* --- 管理密钥：优先从宿主面板存储解出（嵌入式），否则用本页保存的 --- */
+function deobfuscate(raw) {
+  const prefix = "enc::v1::";
+  if (typeof raw !== "string" || !raw.startsWith(prefix)) return raw;
+  const secret = new TextEncoder().encode("cli-proxy-api-webui::secure-storage|" + location.host + "|" + navigator.userAgent);
+  const binary = atob(raw.slice(prefix.length));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i) ^ secret[i % secret.length];
+  return new TextDecoder().decode(bytes);
+}
+function panelStoredValue(name) {
+  try {
+    let raw = localStorage.getItem(name);
+    if (!raw) return null;
+    raw = deobfuscate(raw);
+    return JSON.parse(raw);
+  } catch (_) { return null; }
+}
+function readManagementKey() {
+  const candidates = [
+    panelStoredValue("cli-proxy-auth")?.state?.managementKey,
+    panelStoredValue("managementKey"),
+    localStorage.getItem(OWN_KEY_STORE),
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+  }
+  return "";
+}
+let managementKey = readManagementKey();
+const embedded = window.parent !== window;
+
+function authHeaders(extra) {
+  return Object.assign({ "Authorization": "Bearer " + managementKey }, extra || {});
+}
+async function api(path) {
+  const res = await fetch(path, { headers: authHeaders() });
+  if (res.status === 401 || res.status === 403) throw new Error("管理密钥无效或未提供");
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+/* --- 状态 --- */
+let editor = { default: "empty", debug: false, rules: [] };
+
+function setMsg(id, text, kind) {
+  const el = $(id);
+  el.textContent = text || "";
+  el.className = "msg" + (kind ? " " + kind : "");
+}
+
+/* --- 规则渲染与编辑 --- */
+function renderRules() {
+  const list = $("rules-list");
+  list.innerHTML = "";
+  editor.rules.forEach((rule, index) => {
+    const div = document.createElement("div");
+    div.className = "rule";
+    const head = document.createElement("div");
+    head.className = "rule-head";
+    const keys = document.createElement("div");
+    keys.className = "keys";
+    keys.textContent = "key: " + (rule.keys && rule.keys.length ? rule.keys.join(", ") : "(未设置)");
+    const del = document.createElement("button");
+    del.className = "danger"; del.textContent = "删除规则";
+    del.onclick = () => { editor.rules.splice(index, 1); renderRules(); };
+    head.append(keys, del);
+
+    const mk = (label, value, mono, onchange) => {
+      const f = document.createElement("div");
+      f.className = "field";
+      const l = document.createElement("label"); l.textContent = label;
+      const input = document.createElement("textarea");
+      if (mono) input.className = "mono";
+      input.value = (value || []).join("\n");
+      input.oninput = () => onchange(input.value.split("\n").map(s => s.trim()).filter(Boolean));
+      f.append(l, input);
+      return f;
+    };
+    const grid = document.createElement("div");
+    grid.className = "grid2";
+    grid.append(
+      mk("key（每行一个，精确匹配）", rule.keys, true, v => rule.keys = v),
+      mk("allow — 模型白名单（留空=不按 id 限制）", rule.allow, true, v => rule.allow = v),
+      mk("deny — 模型黑名单（优先于 allow）", rule.deny, true, v => rule.deny = v),
+      mk("allow_owned_by — 提供方白名单", rule.allow_owned_by, true, v => rule.allow_owned_by = v),
+      mk("deny_owned_by — 提供方黑名单", rule.deny_owned_by, true, v => rule.deny_owned_by = v),
+    );
+    div.append(head, grid);
+    list.append(div);
+  });
+  if (!editor.rules.length) {
+    const empty = document.createElement("div");
+    empty.className = "desc";
+    empty.textContent = "（还没有规则 — 所有 key 都走默认策略）";
+    list.append(empty);
+  }
+}
+
+async function loadAll() {
+  const [rules, config] = await Promise.all([
+    api(PLUGIN_BASE + "/rules"),
+    api(PLUGIN_BASE + "/config"),
+  ]);
+  editor = {
+    default: config.default || "empty",
+    debug: !!config.debug,
+    rules: (config.rules || []).map(r => ({
+      keys: r.keys || [], allow: r.allow || [], deny: r.deny || [],
+      allow_owned_by: r.allow_owned_by || [], deny_owned_by: r.deny_owned_by || [],
+    })),
+  };
+  $("ver").textContent = "v" + (rules.version || "?");
+  $("policy-chip").textContent = "默认: " + rules.default;
+  $("default-policy").value = editor.default;
+  $("debug-sel").value = String(editor.debug);
+  renderRules();
+  $("gate").classList.add("hidden");
+  ["rules-card", "sim-card"].forEach(id => $(id).classList.remove("hidden"));
+  $("conn").textContent = "已连接";
+}
+
+async function saveAll() {
+  $("save-btn").disabled = true;
+  setMsg("rules-msg", "保存中…");
+  try {
+    const res = await fetch(PLUGIN_BASE + "/config", {
+      method: "PATCH",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        enabled: true,
+        debug: editor.debug,
+        default: editor.default || "empty",
+        rules: editor.rules,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.message || body.error || ("HTTP " + res.status));
+    }
+    await loadAll();
+    setMsg("rules-msg", "已保存并热生效（config.yaml 已更新，无需重启）", "ok");
+  } catch (e) {
+    setMsg("rules-msg", "保存失败：" + e.message, "err");
+  } finally {
+    $("save-btn").disabled = false;
+  }
+}
+
+/* --- 可见性模拟 --- */
+async function simulate() {
+  const key = $("sim-key").value.trim();
+  if (!key) { setMsg("sim-msg", "请输入要模拟的 key", "err"); return; }
+  $("sim-btn").disabled = true;
+  setMsg("sim-msg", "查询中…");
+  $("sim-rule").innerHTML = ""; $("sim-models").innerHTML = "";
+  try {
+    const check = await api(PLUGIN_BASE + "/check?key=" + encodeURIComponent(key));
+    const rule = document.createElement("div");
+    if (check.matched) {
+      rule.innerHTML = "命中规则：<span class='badge warn'>filtered</span> " +
+        (check.deny && check.deny.length ? "deny " + escapeHTML(check.deny.join(", ")) + " " : "") +
+        (check.allow && check.allow.length ? "allow " + escapeHTML(check.allow.join(", ")) + " " : "") +
+        (check.allow_owned_by && check.allow_owned_by.length ? "owned_by白名单 " + escapeHTML(check.allow_owned_by.join(", ")) + " " : "") +
+        (check.deny_owned_by && check.deny_owned_by.length ? "owned_by黑名单 " + escapeHTML(check.deny_owned_by.join(", ")) : "");
+    } else {
+      rule.innerHTML = "未命中规则：<span class='badge mute'>默认策略 " + escapeHTML(check.effective) + "</span>";
+    }
+    $("sim-rule").append(rule);
+
+    const res = await fetch("/v1/models", { headers: { "Authorization": "Bearer " + key } });
+    if (!res.ok) throw new Error("用该 key 请求 /v1/models 失败：HTTP " + res.status);
+    const data = await res.json();
+    const ids = (data.data || []).map(m => m.id).sort();
+    const head = document.createElement("div");
+    head.style.marginTop = "8px";
+    head.innerHTML = "该 key 实际拉到 <b>" + ids.length + "</b> 个模型：";
+    const chips = document.createElement("div");
+    chips.className = "models";
+    ids.forEach(id => { const s = document.createElement("span"); s.textContent = id; chips.append(s); });
+    if (!ids.length) chips.innerHTML = "<span>（空 — 该 key 看不到任何模型）</span>";
+    $("sim-models").append(head, chips);
+    setMsg("sim-msg", "");
+  } catch (e) {
+    setMsg("sim-msg", "模拟失败：" + e.message, "err");
+  } finally {
+    $("sim-btn").disabled = false;
+  }
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+}
+
+/* --- 鉴权门 --- */
+function showGate(message) {
+  $("gate").classList.remove("hidden");
+  ["rules-card", "sim-card"].forEach(id => $(id).classList.add("hidden"));
+  $("conn").textContent = "未连接";
+  if (message) setMsg("gate-msg", message, "err");
+}
+
+async function connect() {
+  if (!managementKey) { showGate(); return; }
+  try {
+    await loadAll();
+  } catch (e) {
+    if (/管理密钥/.test(e.message)) showGate(e.message);
+    else { showGate(); setMsg("gate-msg", "连接失败：" + e.message, "err"); }
+  }
+}
+
+$("gate-save").onclick = () => {
+  const v = $("gate-key").value.trim();
+  if (!v) { setMsg("gate-msg", "请输入管理密钥", "err"); return; }
+  managementKey = v;
+  try { localStorage.setItem(OWN_KEY_STORE, v); } catch (_) {}
+  connect();
+};
+$("add-rule").onclick = () => {
+  editor.rules.push({ keys: [], allow: [], deny: [], allow_owned_by: [], deny_owned_by: [] });
+  renderRules();
+};
+$("save-btn").onclick = saveAll;
+$("reload-btn").onclick = () => { loadAll(); setMsg("rules-msg", ""); };
+$("sim-btn").onclick = simulate;
+$("sim-key").addEventListener("keydown", e => { if (e.key === "Enter") simulate(); });
+$("default-policy").onchange = e => { editor.default = e.target.value; };
+$("debug-sel").onchange = e => { editor.debug = e.target.value === "true"; };
+
+if (embedded) document.body.classList.add("embedded");
+connect();
+if (managementKey && !embedded) {
+  /* 独立打开时若已保存密钥则直接连上；失败会在 connect 中显示鉴权门 */
+}
+</script>
+</body>
+</html>

@@ -153,3 +153,18 @@ type ManagementRoute struct {
 	Path        string
 	Description string
 }
+
+// ResourceRoute mirrors pluginapi.ResourceRoute (wire subset). A Menu label
+// makes the route appear in the management center sidebar; the host binds
+// Handler to this plugin's management.handle automatically.
+type ResourceRoute struct {
+	Path        string
+	Menu        string
+	Description string
+}
+
+// ManagementRegistration is the management.register result.
+type ManagementRegistration struct {
+	Routes    []ManagementRoute `json:"routes"`
+	Resources []ResourceRoute   `json:"resources"`
+}
