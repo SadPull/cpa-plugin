@@ -49,10 +49,12 @@ GET /v0/management/plugins/cpa-model-visibility/check?key=sk-xxx   # 某个 key 
 ## 构建
 
 ```sh
-CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -tags cshared \
-  -ldflags "-s -w -X cpa-model-visibility/internal/plugin.version=0.1.0" \
-  -o dist/cpa-model-visibility.so ./cmd/cpa-model-visibility
+CGO_ENABLED=1 go build -trimpath -buildmode=c-shared \
+  -ldflags "-s -w -X main.version=$(cat VERSION)" \
+  -o dist/cpa-model-visibility.so .
 ```
+
+CI：`tag cpa-model-visibility-v*`（或手动 dispatch）触发仓库级 Build 工作流，产出插件商店标准多平台 zip（`cpa-model-visibility_<version>_<goos>_<goarch>.zip` + `checksums.txt`）并发布 GitHub Release。
 
 产物放到 CPA 的 `plugins/linux/amd64/`（或扁平 `plugins/`），重启 CPA 生效。
 

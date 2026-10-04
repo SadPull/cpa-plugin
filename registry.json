@@ -36,6 +36,21 @@
         "QoderWork",
         "Management"
       ]
+    },
+    {
+      "id": "cpa-model-visibility",
+      "name": "CPA Model Visibility",
+      "description": "Per-API-key /v1/models catalog filtering for CLIProxyAPI: each downstream key only sees the models it is allowed to. Rules live in config.yaml (allow/deny patterns on model id and owned_by, hot-reloaded), managed from a web panel; request-level enforcement stays with key-billing.",
+      "author": "SadPull",
+      "version": "0.2.3",
+      "repository": "https://github.com/SadPull/cpa-plugin",
+      "homepage": "https://github.com/SadPull/cpa-plugin/tree/main/cpa-model-visibility",
+      "license": "MIT",
+      "tags": [
+        "Management",
+        "Model Visibility",
+        "Panel"
+      ]
     }
   ]
 }

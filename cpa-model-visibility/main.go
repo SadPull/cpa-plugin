@@ -1,8 +1,6 @@
-//go:build cshared
-
 // Command cpa-model-visibility is the CLIProxyAPI plugin entry point.
 // It bridges the C ABI (cliproxy_plugin_init + JSON envelope calls) to the
-// Go App in internal/plugin.
+// Go App in internal/plugin. CI builds it with -ldflags "-X main.version=x.y.z".
 package main
 
 /*
@@ -61,6 +59,10 @@ import (
 var (
 	app = plugin.Default()
 
+	// version is injected with -ldflags "-X main.version=x.y.z" and handed to
+	// the plugin package before the host sends plugin.register.
+	version = "0.0.0-dev"
+
 	hostAPIMu sync.RWMutex
 	hostAPI   *C.cliproxy_host_api // captured at init, used for host.log callbacks
 )
@@ -70,6 +72,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, pluginAPI *C.cliproxy_plugi
 	if host == nil || pluginAPI == nil {
 		return 1
 	}
+	plugin.SetVersion(version)
 	hostAPIMu.Lock()
 	hostAPI = host
 	hostAPIMu.Unlock()

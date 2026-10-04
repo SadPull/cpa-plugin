@@ -3,12 +3,20 @@ package plugin
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 )
 
-// version is overridden at build time with
-// -ldflags "-X cpa-model-visibility/internal/plugin.version=x.y.z".
+// version is the plugin release version, set from the entry point via
+// SetVersion (ldflags -X main.version on the main package).
 var version = "0.0.0-dev"
+
+// SetVersion overrides the reported plugin version.
+func SetVersion(v string) {
+	if v = strings.TrimSpace(v); v != "" {
+		version = v
+	}
+}
 
 // App implements the plugin RPC surface. All state is behind the atomic
 // snapshot in modelVisibility, so intercept calls never take locks.

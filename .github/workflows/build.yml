@@ -1,7 +1,8 @@
-# Multi-arch CPA plugin build & release (workbuddy + qoder).
+# Multi-arch CPA plugin build & release (workbuddy + qoder + cpa-model-visibility).
 # Each plugin versions INDEPENDENTLY:
 #   - tag 'workbuddy-v*'  → release workbuddy at that version
 #   - tag 'qoder-v*'       → release qoder at that version
+#   - tag 'cpa-model-visibility-v*' → release cpa-model-visibility at that version
 #   - workflow_dispatch   → pick plugin + version manually
 #   - plain push/PR       → CI builds for both (artifacts only, no release)
 #
@@ -14,14 +15,14 @@ on:
   pull_request:
   push:
     branches: [main]
-    tags: ["workbuddy-v*", "qoder-v*"]
+    tags: ["workbuddy-v*", "qoder-v*", "cpa-model-visibility-v*"]
   workflow_dispatch:
     inputs:
       plugin:
         description: "Plugin to release"
         required: true
         type: choice
-        options: [workbuddy, qoder]
+        options: [workbuddy, qoder, cpa-model-visibility]
       version:
         description: "Version without v (empty = plugin's VERSION file)"
         required: false
@@ -40,6 +41,7 @@ jobs:
         include:
           - dir: workbuddy
           - dir: qoderwork
+          - dir: cpa-model-visibility
     defaults:
       run:
         working-directory: ${{ matrix.dir }}
@@ -123,6 +125,37 @@ jobs:
             ext: dylib
           - id: qoder
             dir: qoderwork
+            goos: windows
+            goarch: amd64
+            runner: windows-2025
+            ext: dll
+          # cpa-model-visibility native
+          - id: cpa-model-visibility
+            dir: cpa-model-visibility
+            goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+            ext: so
+          - id: cpa-model-visibility
+            dir: cpa-model-visibility
+            goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            ext: so
+          - id: cpa-model-visibility
+            dir: cpa-model-visibility
+            goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+            ext: dylib
+          - id: cpa-model-visibility
+            dir: cpa-model-visibility
+            goos: darwin
+            goarch: arm64
+            runner: macos-15
+            ext: dylib
+          - id: cpa-model-visibility
+            dir: cpa-model-visibility
             goos: windows
             goarch: amd64
             runner: windows-2025
@@ -225,6 +258,14 @@ jobs:
             dir: qoderwork
             target: freebsd-amd64
             ext: so
+          - id: cpa-model-visibility
+            dir: cpa-model-visibility
+            target: windows-arm64
+            ext: dll
+          - id: cpa-model-visibility
+            dir: cpa-model-visibility
+            target: freebsd-amd64
+            ext: so
     defaults:
       run:
         shell: bash
@@ -303,7 +344,8 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '') ||
       startsWith(github.ref, 'refs/tags/workbuddy-v') ||
-      startsWith(github.ref, 'refs/tags/qoder-v')
+      startsWith(github.ref, 'refs/tags/qoder-v') ||
+      startsWith(github.ref, 'refs/tags/cpa-model-visibility-v')
     needs:
       - build
       - build-cross
@@ -322,6 +364,8 @@ jobs:
             V="${{ github.event.inputs.version }}"
           elif [[ "${GITHUB_REF_NAME}" == workbuddy-v* ]]; then
             P="workbuddy"; V="${GITHUB_REF_NAME#workbuddy-v}"
+          elif [[ "${GITHUB_REF_NAME}" == cpa-model-visibility-v* ]]; then
+            P="cpa-model-visibility"; V="${GITHUB_REF_NAME#cpa-model-visibility-v}"
           else
             P="qoder"; V="${GITHUB_REF_NAME#qoder-v}"
           fi
